@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..batch import COPY, FAILED, Job, Outcome, apply_policy, conflicts, plan
-from ..config import Preset
+from ..config import Preset, resource_dir
 from ..downloads import downloads_dir, open_folder
 from ..fitter import FITTED, PASSTHROUGH, SKIPPED
 from ..imageio import is_supported
@@ -488,12 +488,26 @@ class MainWindow(QWidget):
         event.accept()
 
 
+def _close_splash() -> None:
+    """Гасит заставку собранного exe — окно уже на экране."""
+    try:
+        import pyi_splash  # доступен только внутри сборки PyInstaller
+
+        pyi_splash.close()
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     import sys
 
     application = QApplication(argv if argv is not None else sys.argv)
     application.setApplicationName(APP_NAME)
     application.setOrganizationName(APP_NAME)
+    icon = resource_dir() / "assets" / "icon.png"
+    if icon.is_file():
+        application.setWindowIcon(QIcon(str(icon)))
     window = MainWindow(Preset.load())
     window.show()
+    _close_splash()
     return application.exec()
