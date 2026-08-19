@@ -133,7 +133,7 @@ python -m lamoda_item_fitter analyze reference/ --md отчёт.md --json дан
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen pytest -q     # 47 тестов, включая регрессию на эталонах
+QT_QPA_PLATFORM=offscreen pytest -q     # включая регрессию на эталонах Ламоды
 python app.py                            # запуск интерфейса
 pyinstaller --noconfirm --clean LamodaItemFitter.spec
 python assets/make_assets.py             # перегенерировать иконку и заставку
