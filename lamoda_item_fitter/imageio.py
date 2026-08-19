@@ -6,7 +6,8 @@ import io
 import os
 from pathlib import Path
 
-from PIL import Image, ImageOps
+import numpy as np
+from PIL import Image, ImageFile, ImageOps
 
 from .config import OutputCfg
 
@@ -17,9 +18,32 @@ SUPPORTED_SUFFIXES = frozenset(
 #: белый, на который сводится альфа-канал до того, как оценён фон кадра
 ALPHA_MATTE = (255, 255, 255)
 
+# Кодировщик JPEG складывает оптимизированные таблицы Хаффмана в один буфер.
+# Штатных 64 КБ не хватает на детальный кадр 1524×2200, и запись падает с
+# «broken data stream» — поднимаем предел до заведомо достаточного.
+ImageFile.MAXBLOCK = max(getattr(ImageFile, "MAXBLOCK", 0), 8 * 1024 * 1024)
+
 
 def is_supported(path: Path | str) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_SUFFIXES
+
+
+#: режимы с расширенным диапазоном — обычный convert() их обрезает
+WIDE_RANGE_MODES = frozenset({"I", "I;16", "I;16B", "I;16L", "I;16N", "F"})
+
+
+def _to_eight_bit(image: Image.Image) -> Image.Image:
+    """Сжимает 16- и 32-битные кадры в 8 бит.
+
+    Прямой convert("RGB") обрезал бы всё выше 255, и снимок ретушёра в 16 битах
+    превратился бы в белый лист — товар на нём просто не нашёлся бы.
+    """
+    array = np.asarray(image).astype(np.float64)
+    peak = float(array.max())
+    if peak > 255:
+        divisor = 65535.0 if peak <= 65535 else peak
+        array = array * (255.0 / divisor)
+    return Image.fromarray(np.clip(array, 0, 255).astype(np.uint8), "L")
 
 
 def _to_srgb(image: Image.Image) -> Image.Image:
@@ -45,6 +69,8 @@ def load_image(path: Path | str) -> Image.Image:
     image = Image.open(path)
     image.load()
     image = ImageOps.exif_transpose(image)
+    if image.mode in WIDE_RANGE_MODES:
+        image = _to_eight_bit(image)
     if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
         rgba = image.convert("RGBA")
         flat = Image.new("RGB", rgba.size, ALPHA_MATTE)
@@ -63,11 +89,16 @@ def _encode(image: Image.Image, fmt: str, quality: int, cfg: OutputCfg) -> bytes
     buffer = io.BytesIO()
     if fmt == "png":
         image.save(buffer, "PNG", optimize=cfg.png_optimize)
-    else:
-        image.save(
-            buffer, "JPEG", quality=quality,
-            subsampling=cfg.jpeg_subsampling, optimize=True, progressive=False,
-        )
+        return buffer.getvalue()
+    try:
+        image.save(buffer, "JPEG", quality=quality,
+                   subsampling=cfg.jpeg_subsampling, optimize=True, progressive=False)
+    except OSError:
+        # даже с поднятым пределом буфер может не сойтись — отдать файл
+        # важнее, чем сэкономить проценты веса на таблицах Хаффмана
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=quality,
+                   subsampling=cfg.jpeg_subsampling, optimize=False, progressive=False)
     return buffer.getvalue()
 
 
