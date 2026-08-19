@@ -1,0 +1,54 @@
+{
+  "name": "Ламода — обувь",
+  "canvas": {
+    "width": 1524,
+    "height": 2200
+  },
+  "margins": {
+    "top": 200,
+    "bottom": 360,
+    "left": 200,
+    "right": 200
+  },
+  "fill": 1.0,
+  "shadow_mode": "exclude",
+  "cropped_policy": "passthrough",
+  "analysis_max_side": 1500,
+  "background": {
+    "min_level": 220,
+    "border_fraction": 0.02,
+    "flatten_threshold": 8,
+    "protect_dilate_px": 4,
+    "feather": 32
+  },
+  "mask": {
+    "solid_threshold_min": 6,
+    "solid_threshold_max": 30,
+    "soft_threshold": 3,
+    "close_px": 5,
+    "min_component_fraction": 0.02,
+    "edge_touch_px": 2,
+    "uncertainty_warn": 0.04,
+    "core_threshold": 25,
+    "shadow_max_contrast": 25,
+    "shadow_notice_ratio": 0.05
+  },
+  "output": {
+    "format": "jpeg",
+    "jpeg_quality": 100,
+    "jpeg_subsampling": 0,
+    "max_bytes": 5242880,
+    "quality_ladder": [
+      100,
+      97,
+      95,
+      92,
+      90,
+      88,
+      85
+    ],
+    "png_optimize": true,
+    "suffix": "_lamodafit",
+    "suffix_on_folder": false
+  }
+}
