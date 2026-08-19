@@ -102,3 +102,18 @@ def test_clearing_empties_the_queue(qt_app, preset, photos, tmp_path):
     assert window.tree.topLevelItemCount() == 0
     assert not window.run_button.isEnabled()
     window.close()
+
+
+def test_queue_is_locked_while_processing(qt_app, preset, photos, tmp_path):
+    """Пересборка очереди на ходу оборвала бы связь строк с результатами."""
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([photos])
+    window._thread = object()  # притворяемся, что обработка идёт
+
+    window.add_paths([photos / "фото0.jpg"])
+
+    assert window.tree.topLevelItemCount() == 3
+    assert "дождитесь" in window.status.text()
+    window._thread = None
+    window.close()

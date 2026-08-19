@@ -30,6 +30,8 @@ def selftest(report_path: str | None) -> int:
 
         preset_file = resource_dir() / "presets" / "lamoda.json"
         check("пресет упакован", preset_file.is_file(), str(preset_file))
+        icon_file = resource_dir() / "assets" / "icon.png"
+        check("иконка упакована", icon_file.is_file(), str(icon_file))
 
         preset = Preset.load()
         check("холст из пресета",

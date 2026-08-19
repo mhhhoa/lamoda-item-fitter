@@ -32,7 +32,10 @@ analysis = Analysis(
     ["app.py"],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[(str(ROOT / "presets" / "lamoda.json"), "presets")],
+    datas=[
+        (str(ROOT / "presets" / "lamoda.json"), "presets"),
+        (str(ROOT / "assets" / "icon.png"), "assets"),
+    ],
     hiddenimports=["scipy.ndimage", "scipy.special"],
     hookspath=[],
     hooksconfig={},

@@ -196,11 +196,11 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
     if analysis_scale < 1.0:
         approx = tuple(int(round(v / analysis_scale)) for v in box)
         pad = int(math.ceil(2 / analysis_scale)) + 2
-        box = refine_bbox(np.asarray(image), background, masks.threshold, approx, pad)
+        full = np.asarray(image)  # у крупных исходников это десятки мегабайт
+        box = refine_bbox(full, background, masks.threshold, approx, pad)
         if shadow_excluded:
             # уточнять низ обычным порогом нельзя — он вернёт тень обратно
-            core = refine_bbox(np.asarray(image), background,
-                               preset.mask.core_threshold, approx, pad)
+            core = refine_bbox(full, background, preset.mask.core_threshold, approx, pad)
             box = (box[0], box[1], box[2], min(box[3], core[3]))
     metrics.item_box = box
 

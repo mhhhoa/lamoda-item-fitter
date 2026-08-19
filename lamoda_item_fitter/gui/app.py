@@ -248,6 +248,10 @@ class MainWindow(QWidget):
             event.acceptProposedAction()
 
     def add_paths(self, paths: list[Path]) -> None:
+        if self._thread is not None:
+            # пересборка очереди на ходу оборвала бы связь строк с результатами
+            self.status.setText("Идёт обработка — дождитесь окончания, чтобы добавить файлы.")
+            return
         known = set(self._sources)
         self._sources.extend(p for p in paths if p not in known)
         self._rebuild_queue()
@@ -291,6 +295,7 @@ class MainWindow(QWidget):
         self.run_button.setText("Отмена" if running else "Обработать")
         self.clear_button.setEnabled(bool(self._jobs) and not running)
         self.settings_button.setEnabled(not running)
+        self.drop.setEnabled(not running)
         self.output_button.setText(f"Результат: {self._destination()}")
 
     # --- выбор файлов и настройки -------------------------------------------
