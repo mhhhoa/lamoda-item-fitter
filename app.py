@@ -50,11 +50,38 @@ def selftest(report_path: str | None) -> int:
 
         from lamoda_item_fitter.imageio import save_image
 
-        target = Path(report_path or ".").resolve().parent / "_selftest.jpg"
+        work = Path(report_path or ".").resolve().parent
+        target = work / "_selftest.jpg"
         size, quality = save_image(result.image, target, preset.output)
         check("сохранение JPEG", target.exists() and size > 0,
               f"{size / 1048576:.2f} МБ, качество {quality}")
         target.unlink(missing_ok=True)
+
+        # тот самый сценарий, на котором программа закрывалась: сбойный файл
+        # посреди пачки обязан лишь получить статус, а очередь — дойти до конца
+        import shutil
+
+        from lamoda_item_fitter.batch import (
+            COPY, FAILED, apply_policy, plan, process, summarize,
+        )
+
+        sandbox = work / "_selftest_batch"
+        shutil.rmtree(sandbox, ignore_errors=True)
+        (sandbox / "src").mkdir(parents=True)
+        for index in (1, 3):
+            Image.fromarray(array).save(sandbox / "src" / f"{index}.jpg")
+        (sandbox / "src" / "2.jpg").write_text("не картинка", encoding="utf-8")
+
+        jobs, _ = apply_policy(
+            plan([sandbox / "src"], preset, output_root=sandbox / "out"), COPY)
+        outcomes = process(jobs, preset, workers=2)
+        counts = summarize(outcomes)
+        check("сбойный файл не останавливает пачку",
+              len(outcomes) == 3 and counts.get(FITTED) == 2 and counts.get(FAILED) == 1,
+              f"обработано {len(outcomes)} из 3, {counts}")
+        check("у сбойного файла есть причина",
+              all(o.reason for o in outcomes if o.status == FAILED))
+        shutil.rmtree(sandbox, ignore_errors=True)
     except Exception as error:  # noqa: BLE001 — отчёт важнее трассировки
         ok = False
         lines.append(f"[FAIL] ядро: {type(error).__name__}: {error}")
@@ -72,7 +99,8 @@ def selftest(report_path: str | None) -> int:
 
         application = QApplication.instance() or QApplication([])
         window = MainWindow(Preset.load())
-        check("окно собирается", window.tree.columnCount() == 3)
+        check("окно собирается", window.tree.columnCount() == 4,
+              f"колонок {window.tree.columnCount()}")
         window.close()
         application.quit()
     except Exception as error:  # noqa: BLE001
