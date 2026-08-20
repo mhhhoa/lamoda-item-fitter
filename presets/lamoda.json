@@ -50,5 +50,8 @@
     "png_optimize": true,
     "suffix": "_lamodafit",
     "suffix_on_folder": false
-  }
+  },
+  "max_upscale": 8.0,
+  "min_item_fraction": 0.002,
+  "max_working_megapixels": 80.0
 }

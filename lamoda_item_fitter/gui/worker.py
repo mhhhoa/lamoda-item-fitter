@@ -7,7 +7,8 @@ from typing import Sequence
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from ..batch import Job, Outcome, process, summarize
+from .. import errors
+from ..batch import FAILED, Job, Outcome, process, summarize
 from ..config import Preset
 
 
@@ -34,18 +35,37 @@ class BatchWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        total = len(self._jobs)
-        done = 0
-        lock = threading.Lock()
+        """Точка входа фонового потока.
 
-        def on_result(outcome: Outcome) -> None:
-            nonlocal done
-            with lock:
-                done += 1
-                current = done
-            self.produced.emit(outcome)
-            self.progressed.emit(current, total)
+        Тело целиком под защитой: исключение, вылетевшее из слота, PySide6
+        трактует как фатальное и закрывает приложение без единого сообщения.
+        Что бы ни случилось, сигнал о завершении обязан прийти — иначе окно
+        навсегда останется в состоянии «идёт обработка».
+        """
+        counts: dict = {}
+        try:
+            total = len(self._jobs)
+            done = 0
+            lock = threading.Lock()
 
-        outcomes = process(self._jobs, self._preset, on_result=on_result,
-                           cancel=self._cancel, workers=self._workers)
-        self.completed.emit(summarize(outcomes))
+            def on_result(outcome: Outcome) -> None:
+                nonlocal done
+                with lock:
+                    done += 1
+                    current = done
+                self.produced.emit(outcome)
+                self.progressed.emit(current, total)
+
+            outcomes = process(self._jobs, self._preset, on_result=on_result,
+                               cancel=self._cancel, workers=self._workers)
+            counts = summarize(outcomes)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as error:  # noqa: BLE001 — последний рубеж перед Qt
+            errors.report("пакетная обработка", error)
+            counts = {FAILED: len(self._jobs)}
+        finally:
+            try:
+                self.completed.emit(counts)
+            except Exception:
+                pass

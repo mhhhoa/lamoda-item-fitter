@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFile, ImageOps
+from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
 from .config import OutputCfg
 
@@ -22,6 +22,10 @@ ALPHA_MATTE = (255, 255, 255)
 # Штатных 64 КБ не хватает на детальный кадр 1524×2200, и запись падает с
 # «broken data stream» — поднимаем предел до заведомо достаточного.
 ImageFile.MAXBLOCK = max(getattr(ImageFile, "MAXBLOCK", 0), 8 * 1024 * 1024)
+
+
+class UnreadableImage(Exception):
+    """Файл не открывается как изображение — с понятным текстом для пользователя."""
 
 
 def is_supported(path: Path | str) -> bool:
@@ -66,8 +70,14 @@ def _to_srgb(image: Image.Image) -> Image.Image:
 
 def load_image(path: Path | str) -> Image.Image:
     """Загружает кадр: разворот по EXIF, sRGB, RGB без альфы."""
-    image = Image.open(path)
-    image.load()
+    try:
+        image = Image.open(path)
+        image.load()
+    except UnidentifiedImageError as error:
+        raise UnreadableImage(
+            "файл не является изображением или повреждён") from error
+    except OSError as error:
+        raise UnreadableImage(f"файл не читается — {error}") from error
     image = ImageOps.exif_transpose(image)
     if image.mode in WIDE_RANGE_MODES:
         image = _to_eight_bit(image)

@@ -107,6 +107,13 @@ class Preset:
     cropped_policy: str = "passthrough"
     #: длинная сторона рабочей копии, на которой идёт анализ
     analysis_max_side: int = 1500
+    #: во сколько раз максимум допустимо увеличивать товар
+    max_upscale: float = 8.0
+    #: товар мельче этой доли площади кадра — это не товар, а мусор или
+    #: случайный снимок: подгонять такое нельзя ни при каком масштабе
+    min_item_fraction: float = 0.002
+    #: потолок промежуточного изображения, мегапикселей
+    max_working_megapixels: float = 80.0
     background: BackgroundCfg = field(default_factory=BackgroundCfg)
     mask: MaskCfg = field(default_factory=MaskCfg)
     output: OutputCfg = field(default_factory=OutputCfg)

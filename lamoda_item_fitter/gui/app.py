@@ -9,17 +9,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QThread, QRunnable, QObject, QThreadPool, Signal
-from PySide6.QtGui import QIcon, QImage, QImageReader, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QMessageBox, QProgressBar, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
+from .. import errors
 from ..batch import COPY, FAILED, Job, Outcome, apply_policy, conflicts, plan
 from ..config import Preset, resource_dir
 from ..downloads import downloads_dir, open_folder
-from ..fitter import FITTED, PASSTHROUGH, SKIPPED
+from ..fitter import FITTED, PASSTHROUGH, SKIPPED, UNRECOGNIZED
 from ..imageio import is_supported
 from .preview import PreviewView
 from .settings import SettingsDialog
@@ -32,8 +33,9 @@ ROLE_OUTCOME = Qt.ItemDataRole.UserRole + 1
 
 STATUS_TEXT = {
     FITTED: "готово",
-    PASSTHROUGH: "перенесён без подгонки",
-    SKIPPED: "пропущен",
+    PASSTHROUGH: "перенесён как есть",
+    UNRECOGNIZED: "не распознан",
+    SKIPPED: "не подходит",
     FAILED: "ошибка",
 }
 
@@ -49,21 +51,46 @@ def _load_scaled(path: Path, box: QSize) -> QImage:
     return reader.read()
 
 
+def _display_name(job: Job) -> str:
+    """Имя файла без верхней папки: она одна на весь список и лишь мешает."""
+    parts = job.relative.parts
+    if len(parts) > 2:  # вложенная подпапка — её показать полезно
+        return str(Path(*parts[1:]))
+    return job.relative.name
+
+
 class _ThumbSignals(QObject):
-    ready = Signal(object, QImage)
+    ready = Signal(str, QImage)
 
 
 class _ThumbTask(QRunnable):
-    def __init__(self, item: QTreeWidgetItem, path: Path) -> None:
+    """Готовит миниатюру в фоне.
+
+    Отправитель сигнала общий и живёт столько же, сколько окно. Свой QObject
+    на каждую задачу существовать не может: пул удаляет задачу сразу после
+    run(), отправитель уходит вместе с ней, и сигнал, ещё летящий в главный
+    поток, остаётся без источника — «Signal source has been deleted», а в
+    худшем случае падение всего процесса.
+
+    Через сигнал передаётся путь, а не указатель на строку списка:
+    QTreeWidgetItem живёт в C++, и если строку удалили, пока грузилась
+    миниатюра, обращение к такому указателю роняет процесс без сообщения.
+    """
+
+    def __init__(self, key: str, path: Path, signals: _ThumbSignals) -> None:
         super().__init__()
-        self.signals = _ThumbSignals()
-        self._item = item
+        self._signals = signals
+        self._key = key
         self._path = path
 
     def run(self) -> None:
-        image = _load_scaled(self._path, QSize(96, 96))
-        if not image.isNull():
-            self.signals.ready.emit(self._item, image)
+        # ничто не должно вылететь из виртуального метода Qt
+        try:
+            image = _load_scaled(self._path, QSize(96, 96))
+            if not image.isNull():
+                self._signals.ready.emit(self._key, image)
+        except Exception as error:  # noqa: BLE001
+            errors.report(f"миниатюра {self._path.name}", error)
 
 
 class DropZone(QFrame):
@@ -130,9 +157,15 @@ class MainWindow(QWidget):
         self._conflict = COPY
         self._jobs: list[Job] = []
         self._sources: list[Path] = []
+        #: строки списка по пути исходника — обращаться только из главного потока
+        self._rows: dict[str, QTreeWidgetItem] = {}
         self._thread: QThread | None = None
         self._worker: BatchWorker | None = None
         self._pool = QThreadPool()
+        self._pool.setMaxThreadCount(2)
+        #: один отправитель на всё окно — см. _ThumbTask
+        self._thumbs = _ThumbSignals()
+        self._thumbs.ready.connect(self._set_thumbnail)
 
         self.setWindowTitle(APP_NAME)
         self.setAcceptDrops(True)
@@ -140,6 +173,7 @@ class MainWindow(QWidget):
         self.setStyleSheet(stylesheet(self._palette))
         self._build()
         self._refresh_controls()
+        errors.add_listener(self._show_error)
 
     # --- сборка окна ---------------------------------------------------------
 
@@ -168,16 +202,18 @@ class MainWindow(QWidget):
         self.drop.pick_folder.clicked.connect(self._pick_folder)
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["Файл", "Ракурс", "Статус"])
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["Файл", "Ракурс", "Статус", "Причина"])
         self.tree.setRootIsDecorated(False)
         self.tree.setIconSize(QSize(44, 44))
         self.tree.setAlternatingRowColors(False)
-        # обрезаем слева: имя файла важнее пути к нему
-        self.tree.setTextElideMode(Qt.TextElideMode.ElideLeft)
+        # обрезаем справа: в колонке «Причина» важно начало фразы,
+        # а имя файла и так показывается без повторяющегося пути
+        self.tree.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.tree.currentItemChanged.connect(lambda *_: self._update_preview())
 
         self.preview = PreviewView(self._preset, self._palette)
@@ -234,6 +270,13 @@ class MainWindow(QWidget):
         layout.addWidget(self.status)
         layout.addLayout(footer)
 
+    def _show_error(self, message: str) -> None:
+        """Сбой не прячем: коротко в строке статуса, подробности — в логе."""
+        try:
+            self.status.setText(f"Сбой — {message}. Подробности: {errors.log_path()}")
+        except Exception:
+            pass
+
     # --- работа со списком ---------------------------------------------------
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
@@ -247,6 +290,7 @@ class MainWindow(QWidget):
             self.add_paths(paths)
             event.acceptProposedAction()
 
+    @errors.guard("добавление файлов")
     def add_paths(self, paths: list[Path]) -> None:
         if self._thread is not None:
             # пересборка очереди на ходу оборвала бы связь строк с результатами
@@ -258,29 +302,31 @@ class MainWindow(QWidget):
 
     def _rebuild_queue(self) -> None:
         self.tree.clear()
+        self._rows.clear()
         self._jobs = plan(self._sources, self._preset, output_root=self._output_root)
         for job in self._jobs:
-            item = QTreeWidgetItem([job.title, "", "в очереди"])
+            item = QTreeWidgetItem([_display_name(job), "", "в очереди", ""])
             item.setData(0, ROLE_JOB, job)
             item.setToolTip(0, str(job.source))
             self.tree.addTopLevelItem(item)
-            task = _ThumbTask(item, job.source)
-            task.signals.ready.connect(self._set_thumbnail)
-            self._pool.start(task)
+            self._rows[str(job.source)] = item
+            self._pool.start(_ThumbTask(str(job.source), job.source, self._thumbs))
         self._refresh_controls()
         if self._jobs:
             self.status.setText(f"В очереди {len(self._jobs)} файлов.")
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
-    def _set_thumbnail(self, item: QTreeWidgetItem, image: QImage) -> None:
-        try:
+    @errors.guard("миниатюра")
+    def _set_thumbnail(self, key: str, image: QImage) -> None:
+        item = self._rows.get(key)
+        if item is not None:  # строку могли убрать, пока грузилась миниатюра
             item.setIcon(0, QIcon(QPixmap.fromImage(image)))
-        except RuntimeError:
-            pass  # строку успели удалить, пока грузилась миниатюра
 
+    @errors.guard("очистка списка")
     def _clear(self) -> None:
         self._sources.clear()
         self._jobs.clear()
+        self._rows.clear()
         self.tree.clear()
         self.preview.clear()
         self.status.setText("")
@@ -300,6 +346,7 @@ class MainWindow(QWidget):
 
     # --- выбор файлов и настройки -------------------------------------------
 
+    @errors.guard("выбор файлов")
     def _pick_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(
             self, "Выберите фото", "",
@@ -307,11 +354,13 @@ class MainWindow(QWidget):
         if files:
             self.add_paths([Path(f) for f in files])
 
+    @errors.guard("выбор папки")
     def _pick_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Выберите папку с фото")
         if folder:
             self.add_paths([Path(folder)])
 
+    @errors.guard("настройки")
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self._preset, self._output_root, self._conflict, self)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
@@ -323,6 +372,7 @@ class MainWindow(QWidget):
 
     # --- запуск --------------------------------------------------------------
 
+    @errors.guard("кнопка обработки")
     def _toggle_run(self) -> None:
         if self._worker is not None:
             self._worker.cancel()
@@ -353,6 +403,7 @@ class MainWindow(QWidget):
             return "skip"
         return None
 
+    @errors.guard("запуск обработки")
     def _start(self) -> None:
         if not self._jobs:
             return
@@ -396,13 +447,9 @@ class MainWindow(QWidget):
         self._refresh_controls()
 
     def _item_for(self, job: Job) -> QTreeWidgetItem | None:
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
-            stored: Job = item.data(0, ROLE_JOB)
-            if stored is not None and stored.source == job.source:
-                return item
-        return None
+        return self._rows.get(str(job.source))
 
+    @errors.guard("показ результата")
     def _on_outcome(self, outcome: Outcome) -> None:
         item = self._item_for(outcome.job)
         if item is None:
@@ -410,22 +457,25 @@ class MainWindow(QWidget):
         item.setData(0, ROLE_JOB, outcome.job)
         item.setData(0, ROLE_OUTCOME, outcome)
         item.setText(1, outcome.metrics.angle_label or "—")
-        text = STATUS_TEXT.get(outcome.status, outcome.status)
-        if outcome.warnings:
-            text += f" · {len(outcome.warnings)} замечан." if len(outcome.warnings) > 1 else " · замечание"
-        item.setText(2, text)
+        item.setText(2, STATUS_TEXT.get(outcome.status, outcome.status))
+
+        # причина видна прямо в строке: коллеге не нужно догадываться,
+        # почему файл не обработался, и наводить курсор на подсказку
+        reason = outcome.reason or "; ".join(outcome.warnings)
+        if not reason and outcome.status == FITTED:
+            margins = outcome.metrics.margins
+            reason = (f"низ {margins.get('bottom')}, поля "
+                      f"{margins.get('left')}/{margins.get('right')}")
+        item.setText(3, reason)
+
         tooltip = [outcome.reason] if outcome.reason else []
         tooltip += outcome.warnings
-        if outcome.status == FITTED:
-            margins = outcome.metrics.margins
-            tooltip.append(f"отступы: низ {margins.get('bottom')}, "
-                           f"слева {margins.get('left')}, справа {margins.get('right')}")
-        item.setToolTip(2, "\n".join(tooltip))
+        item.setToolTip(3, "\n".join(tooltip) or reason)
         colors = {FITTED: self._palette.success, PASSTHROUGH: self._palette.muted,
-                  SKIPPED: self._palette.warning, FAILED: self._palette.danger}
-        from PySide6.QtGui import QBrush, QColor
-
-        item.setForeground(2, QBrush(QColor(colors.get(outcome.status, self._palette.text))))
+                  UNRECOGNIZED: self._palette.warning, SKIPPED: self._palette.warning,
+                  FAILED: self._palette.danger}
+        brush = QBrush(QColor(colors.get(outcome.status, self._palette.text)))
+        item.setForeground(2, brush)
         if item is self.tree.currentItem():
             self._update_preview()
 
@@ -433,6 +483,7 @@ class MainWindow(QWidget):
         self._counts = counts
         self._cancelled = self._worker is not None and self._worker.cancelled
 
+    @errors.guard("завершение обработки")
     def _on_thread_done(self) -> None:
         thread, worker = self._thread, self._worker
         self._thread = None
@@ -447,9 +498,11 @@ class MainWindow(QWidget):
         self.progress.hide()
         parts = [f"подогнано {counts.get(FITTED, 0)}"]
         if counts.get(PASSTHROUGH):
-            parts.append(f"перенесено без подгонки {counts[PASSTHROUGH]}")
+            parts.append(f"перенесено как есть {counts[PASSTHROUGH]}")
+        if counts.get(UNRECOGNIZED):
+            parts.append(f"не распознано {counts[UNRECOGNIZED]}")
         if counts.get(SKIPPED):
-            parts.append(f"пропущено {counts[SKIPPED]}")
+            parts.append(f"не подошло {counts[SKIPPED]}")
         if counts.get(FAILED):
             parts.append(f"ошибок {counts[FAILED]}")
         prefix = "Остановлено. " if cancelled else "Готово. "
@@ -460,6 +513,7 @@ class MainWindow(QWidget):
 
     # --- превью --------------------------------------------------------------
 
+    @errors.guard("превью")
     def _update_preview(self) -> None:
         item = self.tree.currentItem()
         if item is None:
@@ -490,6 +544,10 @@ class MainWindow(QWidget):
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(3000)
+        # миниатюры дорисовываться некуда: дожидаемся, иначе задачи будут
+        # обращаться к уже закрытому окну
+        self._pool.clear()
+        self._pool.waitForDone(3000)
         event.accept()
 
 
@@ -506,6 +564,7 @@ def _close_splash() -> None:
 def main(argv: list[str] | None = None) -> int:
     import sys
 
+    errors.install()
     application = QApplication(argv if argv is not None else sys.argv)
     application.setApplicationName(APP_NAME)
     application.setOrganizationName(APP_NAME)

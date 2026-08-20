@@ -140,4 +140,4 @@ def test_unreadable_file_is_reported_not_raised(tmp_path, preset):
     outcome = process_one(job, preset)
 
     assert outcome.status == FAILED
-    assert "не удалось открыть" in outcome.reason
+    assert "не является изображением" in outcome.reason

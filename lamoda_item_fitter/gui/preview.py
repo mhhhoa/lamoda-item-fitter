@@ -10,6 +10,7 @@ from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from .. import errors
 from ..config import Preset
 from .theme import Palette
 
@@ -49,8 +50,17 @@ class PreviewView(QWidget):
             return self._before
         return self._after or self._before
 
+    @errors.guard("отрисовка превью")
     def paintEvent(self, event) -> None:  # noqa: N802 — имя задано Qt
         painter = QPainter(self)
+        try:
+            self._paint(painter)
+        finally:
+            # painter обязан закрыться до выхода из обработчика, иначе Qt
+            # ругается на активный painter в бэкстор
+            painter.end()
+
+    def _paint(self, painter: QPainter) -> None:
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.fillRect(self.rect(), QColor(self._palette.surface_alt))
 

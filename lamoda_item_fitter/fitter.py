@@ -29,8 +29,13 @@ from .mask import Box, build_masks, refine_bbox
 FITTED = "fitted"
 PASSTHROUGH = "passthrough"
 SKIPPED = "skipped"
+#: кадр не похож на предметное фото — товар не найден или это не он
+UNRECOGNIZED = "unrecognized"
 
-CROP_PAD = 4  # запас исходника вокруг расчётного куска, px
+#: запас вокруг расчётного куска, в пикселях ГОТОВОГО холста.
+#: В пикселях исходника его брать нельзя: при сильном увеличении запас
+#: умножается на масштаб и раздувает промежуточное изображение в разы.
+CROP_PAD = 4
 
 
 @dataclass
@@ -94,11 +99,12 @@ def _scaled_piece(
     side = (preset.canvas.width / scale - box_w) / 2.0
     above = (preset.baseline_y - box_h * scale) / scale
     below = (preset.canvas.height - preset.baseline_y) / scale
+    pad = max(1, math.ceil(CROP_PAD / scale))
 
-    x0 = max(0, math.floor(box[0] - side) - CROP_PAD)
-    y0 = max(0, math.floor(box[1] - above) - CROP_PAD)
-    x1 = min(image.width, math.ceil(box[2] + 1 + side) + CROP_PAD)
-    y1 = min(image.height, math.ceil(box[3] + 1 + below) + CROP_PAD)
+    x0 = max(0, math.floor(box[0] - side) - pad)
+    y0 = max(0, math.floor(box[1] - above) - pad)
+    x1 = min(image.width, math.ceil(box[2] + 1 + side) + pad)
+    y1 = min(image.height, math.ceil(box[3] + 1 + below) + pad)
     piece = image.crop((x0, y0, x1, y1))
     size = (max(1, round(piece.width * scale)), max(1, round(piece.height * scale)))
     return piece.resize(size, Image.LANCZOS, reducing_gap=3.0)
@@ -152,8 +158,9 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
     metrics.threshold = masks.threshold
     metrics.shadow_px = masks.shadow_px
     if not masks.found:
-        return FitResult(SKIPPED, metrics=metrics, warnings=warnings,
-                         reason="товар на кадре не найден — фон слишком тёмный или кадр пустой")
+        return FitResult(
+            UNRECOGNIZED, metrics=metrics, warnings=warnings,
+            reason="товар на кадре не найден — фон слишком тёмный или кадр пустой")
 
     angle = angle_mod.classify(masks.solid, masks.bbox, masks.components)
     metrics.angle_kind, metrics.angle_label = angle.kind, angle.label
@@ -206,6 +213,28 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
 
     box_w, box_h = box[2] - box[0] + 1, box[3] - box[1] + 1
     scale = min(preset.zone_width / box_w, preset.zone_height / box_h) * preset.fill
+
+    # Кадр может быть вообще не предметным: тогда «товаром» окажется пылинка,
+    # блик или случайное пятно. Растягивать это на весь холст бессмысленно и
+    # вдобавок съедает гигабайты памяти, поэтому отказываемся сразу и внятно.
+    frame_area = image.width * image.height
+    item_fraction = (box_w * box_h) / frame_area if frame_area else 0.0
+    if item_fraction < preset.min_item_fraction:
+        return FitResult(
+            UNRECOGNIZED, metrics=metrics, warnings=warnings,
+            reason=f"товар занимает {item_fraction * 100:.2f}% кадра — похоже, это не "
+                   f"предметное фото или товар слишком мелкий")
+    if scale > preset.max_upscale:
+        return FitResult(
+            UNRECOGNIZED, metrics=metrics, warnings=warnings,
+            reason=f"потребовалось бы увеличение в {scale:.0f}× — исходник слишком "
+                   f"мелкий для холста {preset.canvas.width}×{preset.canvas.height}")
+    working = (preset.canvas.width + 2 * CROP_PAD) * (preset.canvas.height + 2 * CROP_PAD)
+    if working / 1e6 > preset.max_working_megapixels:
+        return FitResult(
+            UNRECOGNIZED, metrics=metrics, warnings=warnings,
+            reason="кадр требует слишком большого промежуточного изображения")
+
     if scale > 1.01:
         warnings.append(f"исходник мельче нужного, увеличен в {scale:.2f}× — возможна потеря резкости")
 
@@ -235,7 +264,7 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
     metrics.scale = scale
 
     if canvas is None or placed is None:
-        return FitResult(SKIPPED, metrics=metrics, warnings=warnings,
+        return FitResult(UNRECOGNIZED, metrics=metrics, warnings=warnings,
                          reason="не удалось разместить товар на холсте")
 
     # отступы берём из размещения, а не из повторного замера: положение товара

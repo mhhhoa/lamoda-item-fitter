@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout,
@@ -89,6 +90,10 @@ class SettingsDialog(QDialog):
         note.setObjectName("hint")
         note.setWordWrap(True)
 
+        credit = QLabel("Автор — Пугачева Мария, @mhhhoa")
+        credit.setObjectName("credit")
+        credit.setAlignment(Qt.AlignmentFlag.AlignRight)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -98,6 +103,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(note)
         layout.addWidget(buttons)
+        layout.addWidget(credit)
 
     def _pick_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Куда сохранять результат")

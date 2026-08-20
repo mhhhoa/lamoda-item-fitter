@@ -55,6 +55,7 @@ def stylesheet(p: Palette) -> str:
     QLabel#title {{ font-size: 19px; font-weight: 600; }}
     QLabel#subtitle {{ color: {p.muted}; }}
     QLabel#hint {{ color: {p.muted}; }}
+    QLabel#credit {{ color: {p.muted}; font-size: 11px; padding-top: 2px; }}
     QLabel#dropTitle {{ font-size: 16px; font-weight: 600; }}
 
     QFrame#dropZone {{

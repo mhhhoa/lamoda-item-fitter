@@ -117,3 +117,70 @@ def test_queue_is_locked_while_processing(qt_app, preset, photos, tmp_path):
     assert "дождитесь" in window.status.text()
     window._thread = None
     window.close()
+
+
+def test_broken_file_in_the_middle_does_not_stop_the_queue(qt_app, preset, tmp_path):
+    """Сценарий пользователя: 6 файлов, четвёртый сбойный.
+
+    Раньше окно закрывалось и файлы после сбойного не обрабатывались вовсе.
+    Теперь все шесть строк обязаны получить статус, а годные — сохраниться.
+    """
+    from PIL import Image
+
+    from lamoda_item_fitter.batch import FAILED
+    from tests.conftest import canvas
+
+    folder = tmp_path / "пачка"
+    folder.mkdir()
+    for index in (1, 2, 3, 5, 6):
+        array = canvas(900, 1400)
+        array[500:700, 200:1100] = 60
+        Image.fromarray(array).save(folder / f"{index}_фото.jpg")
+    (folder / "4_фото.jpg").write_text("не картинка", encoding="utf-8")
+
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([folder])
+    assert window.tree.topLevelItemCount() == 6
+
+    _pump(window)
+
+    statuses = {}
+    for index in range(window.tree.topLevelItemCount()):
+        item = window.tree.topLevelItem(index)
+        outcome = item.data(0, ROLE_OUTCOME)
+        assert outcome is not None, f"строка {item.text(0)} осталась без статуса"
+        assert item.text(2), "статус в строке обязан быть заполнен"
+        assert item.text(3), "причина в строке обязана быть заполнена"
+        statuses[item.text(0)] = outcome.status
+
+    assert sum(1 for s in statuses.values() if s == FITTED) == 5
+    assert sum(1 for s in statuses.values() if s == FAILED) == 1
+    assert len(list((tmp_path / "out").rglob("*.jpg"))) == 5
+    assert "подогнано 5" in window.status.text()
+    window.close()
+
+
+def test_unrecognised_photo_shows_a_reason_in_the_row(qt_app, preset, tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    from lamoda_item_fitter.fitter import UNRECOGNIZED
+    from tests.conftest import canvas
+
+    folder = tmp_path / "пачка"
+    folder.mkdir()
+    array = canvas(2400, 3200, 249)
+    array[1200:1215, 1600:1620] = 40      # пылинка вместо товара
+    Image.fromarray(array).save(folder / "случайное.jpg")
+
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([folder])
+    _pump(window)
+
+    item = window.tree.topLevelItem(0)
+    assert item.data(0, ROLE_OUTCOME).status == UNRECOGNIZED
+    assert item.text(2) == "не распознан"
+    assert item.text(3)
+    window.close()

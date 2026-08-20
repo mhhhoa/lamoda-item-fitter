@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+from . import errors
 from .config import Preset
 from .downloads import downloads_dir
-from .fitter import FITTED, PASSTHROUGH, SKIPPED, FitMetrics, fit_image
-from .imageio import is_supported, load_image, output_suffix, save_image
+from .fitter import FITTED, PASSTHROUGH, SKIPPED, UNRECOGNIZED, FitMetrics, fit_image
+from .imageio import UnreadableImage, is_supported, load_image, output_suffix, save_image
 
 OVERWRITE = "overwrite"
 COPY = "copy"
@@ -130,25 +132,42 @@ def apply_policy(jobs: Sequence[Job], policy: str) -> tuple[list[Job], list[Job]
 
 
 def process_one(job: Job, preset: Preset) -> Outcome:
-    """Обрабатывает и сохраняет один файл."""
+    """Обрабатывает и сохраняет один файл.
+
+    Ни один исходник не имеет права уронить пакет, поэтому ловится всё, кроме
+    отмены пользователем: сбой одного файла превращается в статус его строки,
+    а остальные продолжают обрабатываться.
+    """
     try:
         image = load_image(job.source)
-    except Exception as error:
-        return Outcome(job, FAILED, reason=f"не удалось открыть файл: {error}")
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except UnreadableImage as error:
+        errors.log_only(f"чтение {job.source.name}", error)
+        return Outcome(job, FAILED, reason=str(error))
+    except BaseException as error:  # noqa: BLE001 — сбой файла не должен ронять пакет
+        errors.log_only(f"чтение {job.source.name}", error)
+        return Outcome(job, FAILED, reason=f"не удалось открыть файл — {errors.describe(error)}")
 
     try:
         result = fit_image(image, preset)
-    except Exception as error:
-        return Outcome(job, FAILED, reason=f"ошибка обработки: {error}")
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as error:  # noqa: BLE001
+        errors.log_only(f"обработка {job.source.name}", error)
+        return Outcome(job, FAILED, reason=f"ошибка обработки — {errors.describe(error)}")
 
     if not result.ok or result.image is None:
-        return Outcome(job, SKIPPED, reason=result.reason,
+        return Outcome(job, result.status, reason=result.reason,
                        warnings=result.warnings, metrics=result.metrics)
 
     try:
         size, quality = save_image(result.image, job.destination, preset.output)
-    except Exception as error:
-        return Outcome(job, FAILED, reason=f"не удалось сохранить: {error}",
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as error:  # noqa: BLE001
+        errors.log_only(f"сохранение {job.destination.name}", error)
+        return Outcome(job, FAILED, reason=f"не удалось сохранить — {errors.describe(error)}",
                        warnings=result.warnings, metrics=result.metrics)
 
     warnings = list(result.warnings)
@@ -167,32 +186,53 @@ def process(
     preset: Preset,
     on_result: Callable[[Outcome], None] | None = None,
     cancel: threading.Event | None = None,
-    workers: int = 4,
+    workers: int | None = None,
 ) -> list[Outcome]:
-    """Прогоняет план. Pillow и numpy отпускают GIL, поэтому потоков достаточно."""
+    """Прогоняет план. Pillow и numpy отпускают GIL, поэтому потоков достаточно.
+
+    Каждое задание изолировано: что бы ни случилось с одним файлом, очередь
+    доходит до конца.
+    """
     outcomes: list[Outcome] = []
     if not jobs:
         return outcomes
+    if workers is None:
+        workers = min(4, max(1, os.cpu_count() or 2))
 
     lock = threading.Lock()
 
     def run(job: Job) -> Outcome | None:
         if cancel is not None and cancel.is_set():
             return None
-        outcome = process_one(job, preset)
+        try:
+            outcome = process_one(job, preset)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as error:  # noqa: BLE001 — последний рубеж
+            errors.report(f"задание {job.title}", error)
+            outcome = Outcome(job, FAILED, reason=f"сбой — {errors.describe(error)}")
         with lock:
             outcomes.append(outcome)
-            if on_result is not None:
+        if on_result is not None:
+            try:
                 on_result(outcome)
+            except Exception as error:  # noqa: BLE001
+                # отчёт о результате не должен утаскивать за собой весь пакет
+                errors.report("уведомление о результате", error)
         return outcome
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        list(pool.map(run, jobs))
+        futures = [pool.submit(run, job) for job in jobs]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as error:  # noqa: BLE001
+                errors.report("пул обработки", error)
     return outcomes
 
 
 def summarize(outcomes: Sequence[Outcome]) -> dict[str, int]:
-    counts = {FITTED: 0, PASSTHROUGH: 0, SKIPPED: 0, FAILED: 0}
+    counts = {FITTED: 0, PASSTHROUGH: 0, SKIPPED: 0, UNRECOGNIZED: 0, FAILED: 0}
     for outcome in outcomes:
         counts[outcome.status] = counts.get(outcome.status, 0) + 1
     return counts
