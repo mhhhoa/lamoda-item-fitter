@@ -39,7 +39,7 @@ def photos(tmp_path):
     return folder
 
 
-def _pump(window, timeout_ms=60000):
+def _pump(window, timeout_ms=120000, analyze_only=False):
     """Крутит цикл событий, пока обработка не закончится."""
     loop = QEventLoop()
     original = window._on_thread_done
@@ -50,7 +50,7 @@ def _pump(window, timeout_ms=60000):
 
     window._on_thread_done = finished
     QTimer.singleShot(timeout_ms, loop.quit)
-    QTimer.singleShot(0, window._start)
+    QTimer.singleShot(0, lambda: window._start(analyze_only=analyze_only))
     loop.exec()
 
 
@@ -60,7 +60,8 @@ def test_window_processes_a_folder(qt_app, preset, photos, tmp_path):
     window.add_paths([photos])
 
     assert window.tree.topLevelItemCount() == 3
-    assert str(window.tree.topLevelItem(0).text(0)).endswith("_lamodafit.jpg")
+    # в списке видно исходное имя, суффикс появляется только у файла на диске
+    assert window.tree.topLevelItem(0).text(0) == "фото0.jpg"
 
     _pump(window)
 
@@ -183,4 +184,83 @@ def test_unrecognised_photo_shows_a_reason_in_the_row(qt_app, preset, tmp_path):
     assert item.data(0, ROLE_OUTCOME).status == UNRECOGNIZED
     assert item.text(2) == "не распознан"
     assert item.text(3)
+    window.close()
+
+
+def _photos(tmp_path, count=3):
+    from PIL import Image
+
+    from tests.conftest import canvas
+
+    folder = tmp_path / "пачка"
+    folder.mkdir(exist_ok=True)
+    for index in range(1, count + 1):
+        array = canvas(900, 1400)
+        array[500:700, 200:1100] = 60
+        Image.fromarray(array).save(folder / f"{index}_фото.jpg")
+    return folder
+
+
+def test_all_files_are_checked_by_default(qt_app, preset, tmp_path):
+    from PySide6.QtCore import Qt
+
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([_photos(tmp_path)])
+
+    states = [window.tree.topLevelItem(i).checkState(0)
+              for i in range(window.tree.topLevelItemCount())]
+
+    assert states == [Qt.CheckState.Checked] * 3
+    assert "Выбрано 3 из 3" in window.selection_label.text()
+    window.close()
+
+
+def test_unchecked_files_are_left_alone(qt_app, preset, tmp_path):
+    """Снятая галочка — файл не обрабатывается и в папку результата не попадает."""
+    from PySide6.QtCore import Qt
+
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([_photos(tmp_path)])
+    window.tree.topLevelItem(1).setCheckState(0, Qt.CheckState.Unchecked)
+
+    _pump(window)
+
+    assert len(list((tmp_path / "out").rglob("*.jpg"))) == 2
+    assert window.tree.topLevelItem(1).data(0, ROLE_OUTCOME) is None
+    assert window.tree.topLevelItem(1).text(2) == "в очереди"
+    window.close()
+
+
+def test_nothing_checked_disables_the_buttons(qt_app, preset, tmp_path):
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([_photos(tmp_path)])
+
+    window._set_all_checked(False)
+
+    assert not window.run_button.isEnabled()
+    assert not window.analyze_button.isEnabled()
+    assert "Выбрано 0 из 3" in window.selection_label.text()
+    window.close()
+
+
+def test_analysis_reports_verdicts_without_writing_files(qt_app, preset, tmp_path):
+    """«Анализ» показывает вердикт по каждому кадру и ничего не сохраняет."""
+    from lamoda_item_fitter.fitter import FITTED
+
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([_photos(tmp_path)])
+
+    _pump(window, analyze_only=True)
+
+    for index in range(window.tree.topLevelItemCount()):
+        item = window.tree.topLevelItem(index)
+        outcome = item.data(0, ROLE_OUTCOME)
+        assert outcome is not None and outcome.status == FITTED
+        assert item.text(3), "вердикт обязан быть написан в строке"
+    assert not (tmp_path / "out").exists(), "анализ не должен ничего писать на диск"
+    assert "Анализ готов" in window.status.text()
     window.close()

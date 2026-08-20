@@ -8,8 +8,14 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import sys
 from pathlib import Path
+
+# Обязательно до всего остального: обработка идёт в отдельных процессах, а в
+# собранном exe дочерний процесс — это повторный запуск того же файла.
+# Без этой строки он вместо работы открыл бы ещё одно окно.
+multiprocessing.freeze_support()
 
 
 def selftest(report_path: str | None) -> int:
@@ -62,8 +68,9 @@ def selftest(report_path: str | None) -> int:
         import shutil
 
         from lamoda_item_fitter.batch import (
-            COPY, FAILED, apply_policy, plan, process, summarize,
+            COPY, FAILED, apply_policy, inspect_one, plan, process_one, summarize,
         )
+        from lamoda_item_fitter.runner import run_isolated
 
         sandbox = work / "_selftest_batch"
         shutil.rmtree(sandbox, ignore_errors=True)
@@ -74,13 +81,19 @@ def selftest(report_path: str | None) -> int:
 
         jobs, _ = apply_policy(
             plan([sandbox / "src"], preset, output_root=sandbox / "out"), COPY)
-        outcomes = process(jobs, preset, workers=2)
+        # заодно проверяем, что в собранном виде вообще запускаются рабочие
+        # процессы: без этого изоляция от падений не работала бы
+        outcomes = run_isolated(jobs, preset, process_one, workers=2)
         counts = summarize(outcomes)
         check("сбойный файл не останавливает пачку",
               len(outcomes) == 3 and counts.get(FITTED) == 2 and counts.get(FAILED) == 1,
               f"обработано {len(outcomes)} из 3, {counts}")
         check("у сбойного файла есть причина",
               all(o.reason for o in outcomes if o.status == FAILED))
+
+        verdicts = run_isolated(jobs, preset, inspect_one, workers=2)
+        check("анализ отрабатывает по всем файлам", len(verdicts) == 3,
+              f"вердиктов {len(verdicts)}")
         shutil.rmtree(sandbox, ignore_errors=True)
     except Exception as error:  # noqa: BLE001 — отчёт важнее трассировки
         ok = False

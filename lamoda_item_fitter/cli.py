@@ -7,7 +7,11 @@ import sys
 from pathlib import Path
 
 from .analyze import analyze_paths, collect, to_json, to_markdown
-from .batch import COPY, FAILED, OVERWRITE, SKIP, apply_policy, conflicts, plan, process, summarize
+from .batch import (
+    COPY, FAILED, OVERWRITE, SKIP, apply_policy, conflicts, inspect_one, plan,
+    process_one, summarize,
+)
+from .runner import run_isolated
 from .config import Preset
 from .fitter import FITTED, PASSTHROUGH, SKIPPED
 from .downloads import downloads_dir
@@ -65,7 +69,8 @@ def command_fit(args: argparse.Namespace) -> int:
         for warning in outcome.warnings:
             print(f"        ! {warning}")
 
-    outcomes = process(jobs, preset, on_result=report, workers=args.workers)
+    task = inspect_one if getattr(args, "analyze_only", False) else process_one
+    outcomes = run_isolated(jobs, preset, task, on_result=report, workers=args.workers)
     counts = summarize(outcomes)
     print(f"\nГотово: подогнано {counts[FITTED]}, перенесено {counts[PASSTHROUGH]}, "
           f"пропущено {counts[SKIPPED]}, ошибок {counts[FAILED]}.")
@@ -108,7 +113,9 @@ def build_parser() -> argparse.ArgumentParser:
     fit.add_argument("--quality", type=int, help="качество JPEG")
     fit.add_argument("--on-conflict", choices=[COPY, OVERWRITE, SKIP], default=COPY,
                      help="что делать, если файл с таким именем уже есть")
-    fit.add_argument("--workers", type=int, default=4, help="сколько файлов обрабатывать разом")
+    fit.add_argument("--workers", type=int, help="сколько файлов обрабатывать разом")
+    fit.add_argument("--analyze-only", action="store_true",
+                     help="только распознать кадры, ничего не сохраняя")
     fit.set_defaults(func=command_fit)
 
     analyze = subparsers.add_parser(

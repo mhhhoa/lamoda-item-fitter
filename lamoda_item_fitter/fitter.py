@@ -54,6 +54,30 @@ class FitMetrics:
 
 
 @dataclass
+class Verdict:
+    """Что программа поняла про кадр, ещё не приступая к подгонке.
+
+    Это быстрая часть работы: она идёт по уменьшенной копии и не трогает
+    оригинал. На ней держится кнопка «Анализ» — вердикт по всей пачке готов
+    в разы быстрее, чем полная обработка.
+    """
+
+    status: str
+    reason: str = ""
+    warnings: list[str] = field(default_factory=list)
+    metrics: FitMetrics = field(default_factory=FitMetrics)
+    #: подготовленные данные для подгонки, если она возможна
+    background: np.ndarray | None = None
+    masks: object | None = None
+    analysis_scale: float = 1.0
+    shadow_excluded: bool = False
+
+    @property
+    def fittable(self) -> bool:
+        return self.status == FITTED
+
+
+@dataclass
 class FitResult:
     status: str
     image: Image.Image | None = None
@@ -143,8 +167,13 @@ def _place(
     return canvas, placed
 
 
-def fit_image(image: Image.Image, preset: Preset) -> FitResult:
-    """Приводит кадр к правилам маркетплейса."""
+def inspect_image(image: Image.Image, preset: Preset) -> Verdict:
+    """Распознаёт кадр, ничего не подгоняя и не сохраняя.
+
+    Возвращает вердикт: годится к подгонке, макро для переноса как есть,
+    или не распознан. Тяжёлая часть — масштабирование и запись — сюда
+    не входит.
+    """
     warnings: list[str] = []
     metrics = FitMetrics(source_size=image.size)
 
@@ -158,7 +187,7 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
     metrics.threshold = masks.threshold
     metrics.shadow_px = masks.shadow_px
     if not masks.found:
-        return FitResult(
+        return Verdict(
             UNRECOGNIZED, metrics=metrics, warnings=warnings,
             reason="товар на кадре не найден — фон слишком тёмный или кадр пустой")
 
@@ -173,16 +202,16 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
         canvas_size = (preset.canvas.width, preset.canvas.height)
         if preset.cropped_policy == "passthrough":
             if image.size == canvas_size:
-                return FitResult(
-                    PASSTHROUGH, image=image, metrics=metrics, warnings=warnings,
-                    reason=f"макро-кадр (товар выходит за край {sides}), перенесён без подгонки")
-            return FitResult(
+                return Verdict(
+                    PASSTHROUGH, metrics=metrics, warnings=warnings,
+                    reason=f"макро-кадр (товар выходит за край {sides}), переносится как есть")
+            return Verdict(
                 SKIPPED, metrics=metrics, warnings=warnings,
                 reason=f"макро-кадр (товар выходит за край {sides}), а размер не "
                        f"{canvas_size[0]}×{canvas_size[1]} — обработайте вручную")
         if preset.cropped_policy == "skip":
-            return FitResult(SKIPPED, metrics=metrics, warnings=warnings,
-                             reason=f"товар выходит за край {sides} — авто-подгонка невозможна")
+            return Verdict(SKIPPED, metrics=metrics, warnings=warnings,
+                           reason=f"товар выходит за край {sides} — авто-подгонка невозможна")
         warnings.append(f"товар выходит за край {sides}, габарит определён по видимой части")
 
     if masks.touches.get("bottom"):
@@ -198,11 +227,65 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
             warnings.append(
                 f"под товаром мягкая тень ({masks.confirmed_shadow_px} px), в габарит не включена")
 
+    # Оценка габарита по уменьшенной копии — этого хватает, чтобы понять,
+    # предметный ли кадр вообще. Уточнение по оригиналу стоит дорого и делается
+    # уже при подгонке.
+    box_small = masks.item_bbox(preset.shadow_mode)
+    box_w = (box_small[2] - box_small[0] + 1) / analysis_scale
+    box_h = (box_small[3] - box_small[1] + 1) / analysis_scale
+    scale = min(preset.zone_width / box_w, preset.zone_height / box_h) * preset.fill
+    metrics.scale = scale
+
+    # Кадр может быть вообще не предметным: тогда «товаром» окажется пылинка,
+    # блик или случайное пятно. Растягивать это на весь холст бессмысленно и
+    # вдобавок съедает гигабайты памяти, поэтому отказываемся сразу и внятно.
+    frame_area = image.width * image.height
+    item_fraction = (box_w * box_h) / frame_area if frame_area else 0.0
+    if item_fraction < preset.min_item_fraction:
+        return Verdict(
+            UNRECOGNIZED, metrics=metrics, warnings=warnings,
+            reason=f"товар занимает {item_fraction * 100:.2f}% кадра — похоже, это не "
+                   f"предметное фото или товар слишком мелкий")
+    if scale > preset.max_upscale:
+        return Verdict(
+            UNRECOGNIZED, metrics=metrics, warnings=warnings,
+            reason=f"потребовалось бы увеличение в {scale:.0f}× — исходник слишком "
+                   f"мелкий для холста {preset.canvas.width}×{preset.canvas.height}")
+    working = (preset.canvas.width + 2 * CROP_PAD) * (preset.canvas.height + 2 * CROP_PAD)
+    if working / 1e6 > preset.max_working_megapixels:
+        return Verdict(
+            UNRECOGNIZED, metrics=metrics, warnings=warnings,
+            reason="кадр требует слишком большого промежуточного изображения")
+
+    if scale > 1.01:
+        warnings.append(
+            f"исходник мельче нужного, увеличен в {scale:.2f}× — возможна потеря резкости")
+
+    return Verdict(FITTED, reason="подойдёт", warnings=warnings, metrics=metrics,
+                   background=background, masks=masks, analysis_scale=analysis_scale,
+                   shadow_excluded=shadow_excluded)
+
+
+def fit_image(image: Image.Image, preset: Preset) -> FitResult:
+    """Приводит кадр к правилам маркетплейса."""
+    verdict = inspect_image(image, preset)
+    if not verdict.fittable:
+        return FitResult(
+            verdict.status,
+            image=image if verdict.status == PASSTHROUGH else None,
+            metrics=verdict.metrics, warnings=verdict.warnings, reason=verdict.reason)
+
+    metrics = verdict.metrics
+    warnings = list(verdict.warnings)
+    masks = verdict.masks
+    background = verdict.background
+    shadow_excluded = verdict.shadow_excluded
+
     # габарит: с уменьшенной копии на оригинал и уточнение по оригиналу
     box = masks.item_bbox(preset.shadow_mode)
-    if analysis_scale < 1.0:
-        approx = tuple(int(round(v / analysis_scale)) for v in box)
-        pad = int(math.ceil(2 / analysis_scale)) + 2
+    if verdict.analysis_scale < 1.0:
+        approx = tuple(int(round(v / verdict.analysis_scale)) for v in box)
+        pad = int(math.ceil(2 / verdict.analysis_scale)) + 2
         full = np.asarray(image)  # у крупных исходников это десятки мегабайт
         box = refine_bbox(full, background, masks.threshold, approx, pad)
         if shadow_excluded:
@@ -213,30 +296,6 @@ def fit_image(image: Image.Image, preset: Preset) -> FitResult:
 
     box_w, box_h = box[2] - box[0] + 1, box[3] - box[1] + 1
     scale = min(preset.zone_width / box_w, preset.zone_height / box_h) * preset.fill
-
-    # Кадр может быть вообще не предметным: тогда «товаром» окажется пылинка,
-    # блик или случайное пятно. Растягивать это на весь холст бессмысленно и
-    # вдобавок съедает гигабайты памяти, поэтому отказываемся сразу и внятно.
-    frame_area = image.width * image.height
-    item_fraction = (box_w * box_h) / frame_area if frame_area else 0.0
-    if item_fraction < preset.min_item_fraction:
-        return FitResult(
-            UNRECOGNIZED, metrics=metrics, warnings=warnings,
-            reason=f"товар занимает {item_fraction * 100:.2f}% кадра — похоже, это не "
-                   f"предметное фото или товар слишком мелкий")
-    if scale > preset.max_upscale:
-        return FitResult(
-            UNRECOGNIZED, metrics=metrics, warnings=warnings,
-            reason=f"потребовалось бы увеличение в {scale:.0f}× — исходник слишком "
-                   f"мелкий для холста {preset.canvas.width}×{preset.canvas.height}")
-    working = (preset.canvas.width + 2 * CROP_PAD) * (preset.canvas.height + 2 * CROP_PAD)
-    if working / 1e6 > preset.max_working_megapixels:
-        return FitResult(
-            UNRECOGNIZED, metrics=metrics, warnings=warnings,
-            reason="кадр требует слишком большого промежуточного изображения")
-
-    if scale > 1.01:
-        warnings.append(f"исходник мельче нужного, увеличен в {scale:.2f}× — возможна потеря резкости")
 
     canvas: Image.Image | None = None
     placed: Box | None = None

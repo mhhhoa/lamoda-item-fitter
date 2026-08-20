@@ -7,9 +7,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from .. import APP_NAME, __author__, __handle__, __version__
 from ..batch import COPY, OVERWRITE, SKIP
 from ..config import Preset
 
@@ -90,20 +91,38 @@ class SettingsDialog(QDialog):
         note.setObjectName("hint")
         note.setWordWrap(True)
 
-        credit = QLabel("Автор — Пугачева Мария, @mhhhoa")
+        product = QLabel(f"{APP_NAME} {__version__}")
+        product.setObjectName("creditProduct")
+        product.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        credit = QLabel(f"Разработка — {__author__} · {__handle__}")
         credit.setObjectName("credit")
-        credit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        credit.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Сохранить")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setObjectName("primary")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(note)
+        # две строки подписи держим вплотную: иначе растяжка окна разгоняет их
+        # по вертикали и блок перестаёт читаться как единое целое
+        signature = QVBoxLayout()
+        signature.setSpacing(1)
+        signature.setContentsMargins(0, 0, 0, 0)
+        signature.addWidget(product)
+        signature.addWidget(credit)
+        signature_box = QWidget()
+        signature_box.setLayout(signature)
+
         layout.addWidget(buttons)
-        layout.addWidget(credit)
+        layout.addStretch(1)
+        layout.addSpacing(4)
+        layout.addWidget(signature_box)
 
     def _pick_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Куда сохранять результат")

@@ -12,11 +12,12 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from lamoda_item_fitter import batch as batch_mod
 from lamoda_item_fitter import errors
-from lamoda_item_fitter.batch import COPY, FAILED, apply_policy, plan, process, summarize
+from lamoda_item_fitter.batch import COPY, FAILED, apply_policy, plan, process_one, summarize
 from lamoda_item_fitter.fitter import FITTED, UNRECOGNIZED, fit_image
+from lamoda_item_fitter.runner import run_isolated
 from tests.conftest import as_image, canvas
+from tests.crashers import POISON, raise_task
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -71,31 +72,15 @@ def test_empty_frame_is_unrecognized(preset):
 
 # --- пакет: сбой одного файла не останавливает остальные ---------------------
 
-def test_exploding_file_does_not_stop_the_batch(tmp_path, preset, monkeypatch):
+def test_exploding_file_does_not_stop_the_batch(tmp_path, preset):
+    """Исключение в одном задании не мешает остальным дойти до конца."""
     folder = tmp_path / "пачка"
     for index in (1, 2, 3, 5, 6):
         product_photo(folder / f"{index}_фото.jpg")
-    product_photo(folder / "4_фото.jpg")
-
-    original = batch_mod.fit_image
-
-    def explode(image, cfg):
-        # четвёртый файл ведёт себя как сбойный исходник
-        if getattr(explode, "hit", None) is None:
-            explode.hit = 0
-        raise RuntimeError("сломанный кадр")
-
-    def selective(image, cfg):
-        return original(image, cfg)
-
-    monkeypatch.setattr(batch_mod, "fit_image",
-                        lambda image, cfg: explode(image, cfg)
-                        if image.size == (100, 100) else selective(image, cfg))
-    # четвёртый файл делаем распознаваемым по размеру
-    Image.fromarray(canvas(100, 100)).save(folder / "4_фото.jpg")
+    product_photo(folder / f"4_{POISON}.jpg")
 
     jobs, _ = apply_policy(plan([folder], preset, output_root=tmp_path / "out"), COPY)
-    outcomes = process(jobs, preset, workers=2)
+    outcomes = run_isolated(jobs, preset, raise_task, workers=2)
     counts = summarize(outcomes)
 
     assert len(outcomes) == 6, "очередь обязана дойти до конца"
@@ -112,7 +97,7 @@ def test_unreadable_file_between_good_ones(tmp_path, preset):
     product_photo(folder / "3.jpg")
 
     jobs, _ = apply_policy(plan([folder], preset, output_root=tmp_path / "out"), COPY)
-    outcomes = process(jobs, preset, workers=2)
+    outcomes = run_isolated(jobs, preset, process_one, workers=2)
 
     assert len(outcomes) == 3
     assert summarize(outcomes)[FITTED] == 2
@@ -126,7 +111,7 @@ def test_random_photo_gets_a_reason_not_a_crash(tmp_path, preset):
     product_photo(folder / "3.jpg")
 
     jobs, _ = apply_policy(plan([folder], preset, output_root=tmp_path / "out"), COPY)
-    outcomes = process(jobs, preset, workers=2)
+    outcomes = run_isolated(jobs, preset, process_one, workers=2)
 
     assert len(outcomes) == 3
     odd = next(o for o in outcomes if o.job.source.name == "2.jpg")
@@ -144,7 +129,7 @@ def test_failing_listener_does_not_break_the_batch(tmp_path, preset):
         raise RuntimeError("интерфейс упал")
 
     jobs, _ = apply_policy(plan([folder], preset, output_root=tmp_path / "out"), COPY)
-    outcomes = process(jobs, preset, on_result=bad_listener, workers=2)
+    outcomes = run_isolated(jobs, preset, process_one, on_result=bad_listener, workers=2)
 
     assert summarize(outcomes)[FITTED] == 3
 

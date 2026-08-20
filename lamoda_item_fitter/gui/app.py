@@ -52,11 +52,14 @@ def _load_scaled(path: Path, box: QSize) -> QImage:
 
 
 def _display_name(job: Job) -> str:
-    """Имя файла без верхней папки: она одна на весь список и лишь мешает."""
-    parts = job.relative.parts
-    if len(parts) > 2:  # вложенная подпапка — её показать полезно
-        return str(Path(*parts[1:]))
-    return job.relative.name
+    """Имя исходника, а не будущего результата.
+
+    В списке человек ищет тот файл, который сам положил, поэтому суффикс
+    результата тут только сбивал бы. Верхняя папка тоже не показывается —
+    она одна на весь список; вложенные подпапки, наоборот, важны.
+    """
+    inner = job.relative.parent.parts[1:]
+    return str(Path(*inner, job.source.name)) if inner else job.source.name
 
 
 class _ThumbSignals(QObject):
@@ -215,6 +218,7 @@ class MainWindow(QWidget):
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.tree.currentItemChanged.connect(lambda *_: self._update_preview())
+        self.tree.itemChanged.connect(lambda *_: self._refresh_controls())
 
         self.preview = PreviewView(self._preset, self._palette)
         self.before_toggle = QCheckBox("Показать исходник")
@@ -227,12 +231,36 @@ class MainWindow(QWidget):
         preview_panel.setObjectName("card")
         preview_panel.setLayout(preview_box)
 
+        self.selection_label = QLabel("")
+        self.selection_label.setObjectName("hint")
+        self.check_all = QPushButton("Выделить все")
+        self.check_all.setObjectName("link")
+        self.check_all.clicked.connect(lambda: self._set_all_checked(True))
+        self.check_none = QPushButton("Снять все")
+        self.check_none.setObjectName("link")
+        self.check_none.clicked.connect(lambda: self._set_all_checked(False))
+        selection_row = QHBoxLayout()
+        selection_row.setContentsMargins(2, 0, 2, 0)
+        selection_row.addWidget(self.selection_label)
+        selection_row.addStretch(1)
+        selection_row.addWidget(self.check_all)
+        selection_row.addSpacing(14)
+        selection_row.addWidget(self.check_none)
+
+        queue_box = QVBoxLayout()
+        queue_box.setContentsMargins(0, 0, 0, 0)
+        queue_box.setSpacing(6)
+        queue_box.addLayout(selection_row)
+        queue_box.addWidget(self.tree, 1)
+        queue_panel = QWidget()
+        queue_panel.setLayout(queue_box)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.tree)
+        splitter.addWidget(queue_panel)
         splitter.addWidget(preview_panel)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([600, 400])
+        splitter.setSizes([700, 380])
 
         self.status = QLabel("")
         self.status.setObjectName("hint")
@@ -250,15 +278,20 @@ class MainWindow(QWidget):
 
         self.clear_button = QPushButton("Очистить")
         self.clear_button.clicked.connect(self._clear)
+        self.analyze_button = QPushButton("Анализ")
+        self.analyze_button.setToolTip(
+            "Быстро распознать выбранные кадры и показать вердикт, ничего не сохраняя")
+        self.analyze_button.clicked.connect(lambda: self._toggle_run(analyze_only=True))
         self.run_button = QPushButton("Обработать")
         self.run_button.setObjectName("primary")
-        self.run_button.clicked.connect(self._toggle_run)
+        self.run_button.clicked.connect(lambda: self._toggle_run(analyze_only=False))
 
         footer = QHBoxLayout()
         footer.addWidget(self.output_button)
         footer.addStretch(1)
         footer.addWidget(self.progress)
         footer.addWidget(self.clear_button)
+        footer.addWidget(self.analyze_button)
         footer.addWidget(self.run_button)
 
         layout = QVBoxLayout(self)
@@ -306,6 +339,8 @@ class MainWindow(QWidget):
         self._jobs = plan(self._sources, self._preset, output_root=self._output_root)
         for job in self._jobs:
             item = QTreeWidgetItem([_display_name(job), "", "в очереди", ""])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked)
             item.setData(0, ROLE_JOB, job)
             item.setToolTip(0, str(job.source))
             self.tree.addTopLevelItem(item)
@@ -337,11 +372,17 @@ class MainWindow(QWidget):
 
     def _refresh_controls(self) -> None:
         running = self._thread is not None
-        self.run_button.setEnabled(bool(self._jobs) or running)
+        chosen = len(self._checked_jobs()) if self._jobs else 0
+        self.run_button.setEnabled(bool(chosen) or running)
         self.run_button.setText("Отмена" if running else "Обработать")
+        self.analyze_button.setEnabled(bool(chosen) and not running)
         self.clear_button.setEnabled(bool(self._jobs) and not running)
         self.settings_button.setEnabled(not running)
         self.drop.setEnabled(not running)
+        self.check_all.setEnabled(bool(self._jobs) and not running)
+        self.check_none.setEnabled(bool(self._jobs) and not running)
+        self.selection_label.setText(
+            f"Выбрано {chosen} из {len(self._jobs)}" if self._jobs else "")
         self.output_button.setText(f"Результат: {self._destination()}")
 
     # --- выбор файлов и настройки -------------------------------------------
@@ -373,13 +414,13 @@ class MainWindow(QWidget):
     # --- запуск --------------------------------------------------------------
 
     @errors.guard("кнопка обработки")
-    def _toggle_run(self) -> None:
+    def _toggle_run(self, analyze_only: bool = False) -> None:
         if self._worker is not None:
             self._worker.cancel()
             self.status.setText("Останавливаю…")
             self.run_button.setEnabled(False)
             return
-        self._start()
+        self._start(analyze_only=analyze_only)
 
     def _ask_conflicts(self, jobs: list[Job]) -> str | None:
         clashing = conflicts(jobs)
@@ -404,13 +445,18 @@ class MainWindow(QWidget):
         return None
 
     @errors.guard("запуск обработки")
-    def _start(self) -> None:
-        if not self._jobs:
+    def _start(self, analyze_only: bool = False) -> None:
+        chosen = self._checked_jobs()
+        if not chosen:
             return
-        policy = self._ask_conflicts(self._jobs)
-        if policy is None:
-            return
-        jobs, skipped = apply_policy(self._jobs, policy)
+        if analyze_only:
+            # анализ ничего не пишет на диск, поэтому и спрашивать не о чем
+            jobs, skipped = list(chosen), []
+        else:
+            policy = self._ask_conflicts(chosen)
+            if policy is None:
+                return
+            jobs, skipped = apply_policy(chosen, policy)
         for job in skipped:
             item = self._item_for(job)
             if item is not None:
@@ -423,16 +469,17 @@ class MainWindow(QWidget):
             item = self._item_for(job)
             if item is not None:
                 item.setData(0, ROLE_JOB, job)
-                item.setText(2, "обработка…")
+                item.setText(2, "анализ…" if analyze_only else "обработка…")
 
         self.progress.setRange(0, len(jobs))
         self.progress.setValue(0)
         self.progress.show()
-        self.status.setText("Обрабатываю…")
+        self.status.setText("Анализирую…" if analyze_only else "Обрабатываю…")
 
         self._counts = {}
         self._cancelled = False
-        self._worker = BatchWorker(jobs, self._preset)
+        self._analyzing = analyze_only
+        self._worker = BatchWorker(jobs, self._preset, analyze_only=analyze_only)
         self._thread = QThread(self)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -444,6 +491,24 @@ class MainWindow(QWidget):
         self._worker.completed.connect(self._thread.quit)
         self._thread.finished.connect(self._on_thread_done)
         self._thread.start()
+        self._refresh_controls()
+
+    def _all_items(self) -> list[QTreeWidgetItem]:
+        return [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+
+    def _checked_jobs(self) -> list[Job]:
+        """Обрабатываем только то, что отмечено галочкой."""
+        return [item.data(0, ROLE_JOB) for item in self._all_items()
+                if item.checkState(0) == Qt.CheckState.Checked
+                and item.data(0, ROLE_JOB) is not None]
+
+    @errors.guard("выделение файлов")
+    def _set_all_checked(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self.tree.blockSignals(True)
+        for item in self._all_items():
+            item.setCheckState(0, state)
+        self.tree.blockSignals(False)
         self._refresh_controls()
 
     def _item_for(self, job: Job) -> QTreeWidgetItem | None:
@@ -496,7 +561,8 @@ class MainWindow(QWidget):
         counts = getattr(self, "_counts", {})
         cancelled = getattr(self, "_cancelled", False)
         self.progress.hide()
-        parts = [f"подогнано {counts.get(FITTED, 0)}"]
+        analyzing = getattr(self, "_analyzing", False)
+        parts = [f"{'подойдёт' if analyzing else 'подогнано'} {counts.get(FITTED, 0)}"]
         if counts.get(PASSTHROUGH):
             parts.append(f"перенесено как есть {counts[PASSTHROUGH]}")
         if counts.get(UNRECOGNIZED):
@@ -505,7 +571,10 @@ class MainWindow(QWidget):
             parts.append(f"не подошло {counts[SKIPPED]}")
         if counts.get(FAILED):
             parts.append(f"ошибок {counts[FAILED]}")
-        prefix = "Остановлено. " if cancelled else "Готово. "
+        if cancelled:
+            prefix = "Остановлено. "
+        else:
+            prefix = "Анализ готов. " if analyzing else "Готово. "
         # путь и так висит слева в футере — незачем повторять его здесь
         self.status.setText(prefix + ", ".join(parts) + ".")
         self._refresh_controls()

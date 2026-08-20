@@ -8,8 +8,9 @@ from typing import Sequence
 from PySide6.QtCore import QObject, Signal, Slot
 
 from .. import errors
-from ..batch import FAILED, Job, Outcome, process, summarize
+from ..batch import FAILED, Job, Outcome, inspect_one, process_one, summarize
 from ..config import Preset
+from ..runner import run_isolated
 
 
 class BatchWorker(QObject):
@@ -19,10 +20,12 @@ class BatchWorker(QObject):
     produced = Signal(object)
     completed = Signal(dict)
 
-    def __init__(self, jobs: Sequence[Job], preset: Preset, workers: int = 4) -> None:
+    def __init__(self, jobs: Sequence[Job], preset: Preset,
+                 analyze_only: bool = False, workers: int | None = None) -> None:
         super().__init__()
         self._jobs = list(jobs)
         self._preset = preset
+        self._analyze_only = analyze_only
         self._workers = workers
         self._cancel = threading.Event()
 
@@ -56,8 +59,9 @@ class BatchWorker(QObject):
                 self.produced.emit(outcome)
                 self.progressed.emit(current, total)
 
-            outcomes = process(self._jobs, self._preset, on_result=on_result,
-                               cancel=self._cancel, workers=self._workers)
+            task = inspect_one if self._analyze_only else process_one
+            outcomes = run_isolated(self._jobs, self._preset, task, on_result=on_result,
+                                    cancel=self._cancel, workers=self._workers)
             counts = summarize(outcomes)
         except (KeyboardInterrupt, SystemExit):
             raise
