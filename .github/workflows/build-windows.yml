@@ -34,6 +34,11 @@ jobs:
     needs: tests
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      # Появятся, когда в настройках репозитория заведут сертификат.
+      # Без них шаг подписи просто пропускается, сборка идёт как обычно.
+      CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+      CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,6 +49,21 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Сборка
         run: pyinstaller --noconfirm --clean LamodaItemFitter.spec
+      - name: Подпись exe (если заведён сертификат)
+        # Единственное, что убирает предупреждение SmartScreen у коллег.
+        # Сертификат кладётся в секреты репозитория как base64 от .pfx.
+        if: env.CERT_BASE64 != ''
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:CERT_BASE64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName | Select-Object -Last 1
+          & $signtool.FullName sign /f cert.pfx /p $env:CERT_PASSWORD `
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            dist\LamodaItemFitter.exe
+          Remove-Item cert.pfx -Force
+          & $signtool.FullName verify /pa dist\LamodaItemFitter.exe
+
       - name: Самопроверка собранного exe
         shell: pwsh
         run: |
@@ -73,5 +93,11 @@ jobs:
           draft: true
           files: dist/LamodaItemFitter.exe
           body: |
-            Готовый `LamodaItemFitter.exe` для Windows.
-            Скачайте файл и запустите двойным кликом — устанавливать ничего не нужно.
+            Готовый `LamodaItemFitter.exe` для Windows. Устанавливать ничего не нужно.
+
+            **Если Windows показала «Система Windows защитила ваш компьютер»** —
+            так она встречает любую программу без цифровой подписи. Чтобы окно
+            больше не появлялось, снимите блокировку до распаковки:
+            правый клик по скачанному архиву → **Свойства** → внизу галочка
+            **«Разблокировать»** → **ОК**, и только потом распакуйте.
+            Если архив уже распакован, то же самое можно сделать с самим `exe`.
