@@ -92,3 +92,27 @@ def test_summary_adds_up(qt_app, tree, tmp_path):
     assert summary.processed == len(jobs)
     assert summary.output_bytes < summary.source_bytes
     assert len(results) == len(jobs)
+
+
+def test_broken_file_does_not_stop_the_queue(qt_app, tree, tmp_path):
+    """Один негодный файл посреди пачки не должен уносить остальные."""
+    (tree / "dress_blue" / "corrupt.jpg").write_bytes(
+        b"\xff\xd8\xff\xe0" + "обрывок".encode("utf-8")
+    )
+    out = tmp_path / "out"
+    settings = Settings(output_dir=str(out), target_mb=0.3, max_side=1000)
+
+    summary, results = run(collect([tree]), settings)
+
+    assert summary.errors == 1
+    assert summary.processed == summary.total
+
+    broken = [r for r in results.values() if r.status is Status.ERROR]
+    assert broken[0].source.name == "corrupt.jpg"
+    assert broken[0].message and "Truncated" not in broken[0].message
+    assert not (out / "shoot" / "dress_blue" / "corrupt.jpg").exists()
+
+    # Остальные файлы обработаны как обычно.
+    good = [r for r in results.values() if r.status is not Status.ERROR]
+    assert len(good) == summary.total - 1
+    assert all(r.destination is not None and r.destination.exists() for r in good)

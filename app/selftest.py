@@ -100,9 +100,7 @@ def run(report_path: Path | None = None) -> int:
     report.check("Форматы Pillow", formats)
 
     def heif():
-        from .core.compressor import HEIF_AVAILABLE
-
-        from .core.compressor import HEIF_ERROR
+        from .core.compressor import HEIF_AVAILABLE, HEIF_ERROR
 
         if not HEIF_AVAILABLE:
             raise AssertionError(
@@ -122,9 +120,7 @@ def run(report_path: Path | None = None) -> int:
     report.check("HEIC/HEIF", heif)
 
     def mozjpeg():
-        from .core.compressor import MOZJPEG_AVAILABLE
-
-        from .core.compressor import MOZJPEG_ERROR
+        from .core.compressor import MOZJPEG_AVAILABLE, MOZJPEG_ERROR
 
         if not MOZJPEG_AVAILABLE:
             raise AssertionError(
@@ -166,6 +162,7 @@ def run(report_path: Path | None = None) -> int:
         from .core.compressor import Status, compress_bytes
         from .core.settings import Settings
 
+
         buffer = io.BytesIO()
         _sample(500, 500).save(buffer, format="JPEG", quality=90)
         raw = buffer.getvalue()
@@ -186,20 +183,29 @@ def run(report_path: Path | None = None) -> int:
     report.check("Режим без потерь", lossless)
 
     def broken_file(tmp=Path(os.environ.get("TEMP", ".")) / "lif_broken.jpg"):
-        """Битый файл посреди пачки должен стать статусом, а не концом очереди."""
-        from .core.compressor import Status, compress_file
+        """Битый файл обязан стать понятной ошибкой, а не уехать в выгрузку."""
+        from .core.compressor import compress_file
         from .core.settings import Settings
+        from .pipeline import _readable
 
         tmp.write_bytes(b"\xff\xd8\xff\xe0" + "это не картинка".encode("utf-8"))
         destination = tmp.with_name("lif_broken_out.jpg")
         try:
-            compress_file(tmp, lambda extension: destination, Settings())
-        except Exception as error:
-            raise AssertionError(f"упало вместо статуса: {error!r}") from error
+            try:
+                result = compress_file(tmp, lambda extension: destination, Settings())
+            except Exception as error:
+                message = _readable(error)
+                if message == repr(error) or not message:
+                    raise AssertionError(f"нечитаемое сообщение об ошибке: {error!r}")
+                if destination.exists():
+                    raise AssertionError("битый файл всё-таки попал в выгрузку")
+                return f"стал ошибкой: {message}"
+            raise AssertionError(
+                f"битый файл прошёл как {result.status.value} — он бы уехал на площадку"
+            )
         finally:
             tmp.unlink(missing_ok=True)
             destination.unlink(missing_ok=True)
-        return "обработан без падения"
 
     report.check("Битый файл", broken_file)
 

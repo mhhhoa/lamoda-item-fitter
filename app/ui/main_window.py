@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.compressor import Status
 from ..core.jobs import collect
 from ..core.settings import INPUT_EXTENSIONS, Settings
 from ..pipeline import Pipeline, Summary

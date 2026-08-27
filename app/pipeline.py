@@ -88,9 +88,14 @@ class _Task(QRunnable):
 
 
 def _readable(error: Exception) -> str:
+    """Переводит внутренние формулировки библиотек в человеческие."""
     text = str(error).strip() or error.__class__.__name__
     if "cannot identify image file" in text:
         return "Не похоже на картинку — файл повреждён или не тот формат"
+    if "Truncated File Read" in text or "image file is truncated" in text:
+        return "Файл обрывается на середине — скопировался не полностью?"
+    if "broken data stream" in text:
+        return "Не удалось записать результат — попробуйте другой формат вывода"
     if isinstance(error, (PermissionError,)):
         return "Нет доступа к файлу — закройте его в других программах"
     if isinstance(error, FileNotFoundError):
