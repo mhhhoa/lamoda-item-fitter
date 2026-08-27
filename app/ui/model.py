@@ -202,7 +202,8 @@ class FileTableModel(QAbstractTableModel):
         if column == self.COL_SAVED:
             if row.result is None or not row.size:
                 return ""
-            if row.result.status is Status.SKIPPED:
+            if row.result.status in (Status.SKIPPED, Status.ERROR):
+                # Ничего не записали — «−100%» читалось бы как рекордное сжатие.
                 return "—"
             percent = 100 * (1 - row.result.ratio)
             return f"−{percent:.0f}%" if percent >= 0.5 else "0%"

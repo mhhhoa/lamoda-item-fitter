@@ -116,3 +116,22 @@ def test_broken_file_does_not_stop_the_queue(qt_app, tree, tmp_path):
     good = [r for r in results.values() if r.status is not Status.ERROR]
     assert len(good) == summary.total - 1
     assert all(r.destination is not None and r.destination.exists() for r in good)
+
+
+def test_error_row_does_not_boast_about_saving(qt_app, tmp_path):
+    """У файла с ошибкой ничего не записано, «−100%» читалось бы как успех."""
+    from app.ui.model import FileTableModel
+
+    broken = tmp_path / "corrupt.jpg"
+    broken.write_bytes(b"\xff\xd8\xff\xe0" + "обрывок".encode("utf-8"))
+    settings = Settings(output_dir=str(tmp_path / "out"))
+
+    _, results = run(collect([broken]), settings)
+
+    model = FileTableModel()
+    model.add_jobs(collect([broken]))
+    model.set_result(0, results[0])
+
+    assert results[0].status is Status.ERROR
+    assert model.data(model.index(0, FileTableModel.COL_SAVED)) == "—"
+    assert model.data(model.index(0, FileTableModel.COL_AFTER)) == "—"
