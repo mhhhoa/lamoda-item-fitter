@@ -255,3 +255,48 @@ def test_sixteen_bit_image_does_not_turn_into_a_white_sheet():
 
     assert min(values) < 10 and max(values) > 245
     assert sum(value == 255 for value in values) / len(values) < 0.05
+
+
+def test_broken_file_is_never_copied_into_the_output(tmp_path):
+    """Пустышка или текст с расширением .jpg не должны уехать в выгрузку."""
+    import pytest
+
+    for name, content in (("empty.jpg", b""), ("notes.jpg", "текст".encode("utf-8"))):
+        source = tmp_path / name
+        source.write_bytes(content)
+        destination = tmp_path / "out" / name
+
+        with pytest.raises(Exception):
+            compress_file(source, lambda extension: destination, Settings())
+
+        assert not destination.exists()
+
+
+def test_mislabelled_file_gets_the_extension_of_its_real_format(tmp_path, photo):
+    """PNG с именем .jpg должен лечь на диск как .png, а не притворяться JPEG."""
+    source = tmp_path / "lying.jpg"
+    photo(300, 300).save(source, format="PNG")
+    seen = {}
+
+    def destination_for(extension):
+        seen["extension"] = extension
+        return tmp_path / "out" / f"lying{extension}"
+
+    result = compress_file(source, destination_for, Settings(target_mb=5.0))
+
+    assert seen["extension"] == ".png"
+    assert result.destination.name == "lying.png"
+
+
+def test_normal_extension_is_preserved_on_copy(tmp_path, photo):
+    """А привычное .jpeg переименовывать в .jpg незачем — имена ищут по списку."""
+    source = tmp_path / "front.jpeg"
+    source.write_bytes(encode_jpeg(photo(300, 300), quality=80))
+
+    result = compress_file(
+        source, lambda extension: tmp_path / "out" / f"front{extension}",
+        Settings(target_mb=5.0),
+    )
+
+    assert result.status is Status.COPIED
+    assert result.destination.name == "front.jpeg"

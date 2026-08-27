@@ -651,8 +651,9 @@ def compress_file(
     raw = source.read_bytes()
 
     # Файл уже подходит, ничего менять не просили — просто копируем.
-    if _can_copy_as_is(raw, source, source_size, target, settings):
-        destination = destination_for(source.suffix.lower())
+    copy_extension = _copy_extension(raw, source, source_size, target, settings)
+    if copy_extension is not None:
+        destination = destination_for(copy_extension)
         if destination is None:
             return Result(Status.SKIPPED, source, None, source_size, source_size,
                           message="Файл с таким именем уже есть")
@@ -711,33 +712,42 @@ def format_from_suffix(suffix: str) -> str:
     return suffix.lstrip(".")
 
 
-def _can_copy_as_is(
+def _copy_extension(
     raw: bytes, source: Path, source_size: int, target: int | None, settings: Settings
-) -> bool:
-    """Можно ли просто скопировать файл, не трогая пиксели.
+) -> str | None:
+    """Расширение для копии файла либо None, если копировать нельзя.
 
-    Копия допустима, только если результат совпал бы с оригиналом по всем
-    заявленным требованиям: вес, разрешение, формат и метаданные.
+    Копия допустима, только если результат совпал бы с пережатым по всем
+    заявленным требованиям: вес, разрешение, формат и метаданные. Файл при
+    этом обязан быть читаемой картинкой — иначе пустышка или переименованный
+    текст уехали бы в выгрузку под видом готового снимка.
     """
     if target is None or source_size > target or not settings.copy_when_already_small:
-        return False
-    if resolve_output_format(settings, format_from_suffix(source.suffix)) != _extension_format(source):
-        return False
-    if _needs_resize(raw, settings):
-        return False
-    if not settings.keep_metadata and _has_metadata(raw):
-        # Просили выкинуть метаданные — копией это не сделаешь.
-        return False
-    return True
+        return None
 
-
-def _has_metadata(raw: bytes) -> bool:
     try:
         with Image.open(io.BytesIO(raw)) as image:
+            actual = (image.format or "").lower()
+            if resolve_output_format(settings, actual) != actual:
+                return None
+            if settings.max_side_enabled and max(image.size) > settings.max_side:
+                return None
             info = image.info
-            return bool(info.get("exif") or info.get("icc_profile") or info.get("comment"))
+            has_metadata = bool(
+                info.get("exif") or info.get("icc_profile") or info.get("comment")
+            )
     except Exception:
-        return False
+        # Не открылось — пусть обычный путь честно вернёт ошибку.
+        return None
+
+    if not settings.keep_metadata and has_metadata:
+        # Просили выкинуть метаданные — копией это не сделаешь.
+        return None
+
+    # У JPEG внутри может лежать что угодно: расширение подгоняем под
+    # настоящий формат, иначе площадка получит PNG с именем .jpg.
+    suffix = source.suffix.lower()
+    return suffix if format_from_suffix(suffix) == actual else output_extension(actual)
 
 
 def _extension_format(path: Path) -> str:
@@ -746,16 +756,6 @@ def _extension_format(path: Path) -> str:
     if suffix in (".jpg", ".jpeg", ".jpe", ".jfif"):
         return "jpeg"
     return suffix.lstrip(".")
-
-
-def _needs_resize(raw: bytes, settings: Settings) -> bool:
-    if not settings.max_side_enabled:
-        return False
-    try:
-        with Image.open(io.BytesIO(raw)) as image:
-            return max(image.size) > settings.max_side
-    except Exception:
-        return False
 
 
 def _dimensions(raw: bytes) -> tuple[int, int]:
