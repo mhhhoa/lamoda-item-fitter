@@ -1,10 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Сборка одного самодостаточного .exe: pyinstaller --noconfirm build.spec"""
 
-from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_all
 
 heif_datas, heif_binaries, heif_hidden = collect_all("pillow_heif")
-mozjpeg_binaries = collect_dynamic_libs("mozjpeg_lossless_optimization")
+mozjpeg_datas, mozjpeg_binaries, mozjpeg_hidden = collect_all("mozjpeg_lossless_optimization")
+
+# _mozjpeg_opti — модуль на cffi, и _cffi_backend он тянет на уровне C, куда
+# анализатор PyInstaller не заглядывает. Без этой строки библиотека не
+# импортируется в собранном виде, а режим «без потерь» молча деградирует.
+CFFI_IMPORTS = ["_cffi_backend", "cffi"]
 
 # Модули, которые тянутся за PySide6, но приложению не нужны.
 EXCLUDES = [
@@ -12,15 +17,15 @@ EXCLUDES = [
     "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtWebSockets",
     "PySide6.QtTest", "PySide6.QtSql", "PySide6.QtDesigner", "PySide6.QtHelp",
     "PySide6.QtUiTools", "PySide6.QtPdf", "PySide6.QtPdfWidgets",
-    "numpy", "scipy", "matplotlib", "pytest", "IPython", "setuptools",
+    "numpy", "scipy", "matplotlib", "pytest", "IPython",
 ]
 
 a = Analysis(
     ["run.py"],
     pathex=[],
     binaries=heif_binaries + mozjpeg_binaries,
-    datas=[("assets", "assets")] + heif_datas,
-    hiddenimports=["mozjpeg_lossless_optimization"] + heif_hidden,
+    datas=[("assets", "assets")] + heif_datas + mozjpeg_datas,
+    hiddenimports=CFFI_IMPORTS + heif_hidden + mozjpeg_hidden,
     hookspath=[],
     runtime_hooks=[],
     excludes=EXCLUDES,

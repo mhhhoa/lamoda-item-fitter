@@ -102,8 +102,13 @@ def run(report_path: Path | None = None) -> int:
     def heif():
         from .core.compressor import HEIF_AVAILABLE
 
+        from .core.compressor import HEIF_ERROR
+
         if not HEIF_AVAILABLE:
-            raise AssertionError("pillow-heif не подтянулся — HEIC с айфона читаться не будет")
+            raise AssertionError(
+                f"pillow-heif не подтянулся ({HEIF_ERROR or 'причина неизвестна'}) — "
+                "HEIC с айфона читаться не будет"
+            )
         import pillow_heif
 
         buffer = io.BytesIO()
@@ -119,8 +124,13 @@ def run(report_path: Path | None = None) -> int:
     def mozjpeg():
         from .core.compressor import MOZJPEG_AVAILABLE
 
+        from .core.compressor import MOZJPEG_ERROR
+
         if not MOZJPEG_AVAILABLE:
-            raise AssertionError("mozjpeg не подтянулся — режим «без потерь» работать не будет")
+            raise AssertionError(
+                f"mozjpeg не подтянулся ({MOZJPEG_ERROR or 'причина неизвестна'}) — "
+                "режим «без потерь» работать не будет"
+            )
         return "доступен"
 
     report.check("Оптимизация без потерь", mozjpeg)
@@ -135,16 +145,20 @@ def run(report_path: Path | None = None) -> int:
         raw = buffer.getvalue()
 
         settings = Settings(target_mb=0.25, max_side_enabled=True, max_side=800)
-        data, fmt, status, width, height, quality, _ = compress_bytes(raw, settings)
+        result = compress_bytes(raw, settings)
 
-        if status is Status.ERROR:
+        if result.status is Status.ERROR:
             raise AssertionError("сжатие вернуло ошибку")
-        if len(data) > settings.target_bytes:
-            raise AssertionError(f"не уложились в лимит: {len(data)} > {settings.target_bytes}")
-        if max(width, height) > 800:
-            raise AssertionError(f"не сработало ограничение размера: {width}×{height}")
-        return (f"{len(raw) // 1024} КБ → {len(data) // 1024} КБ, "
-                f"{width}×{height}, качество {quality}")
+        if len(result.data) > settings.target_bytes:
+            raise AssertionError(
+                f"не уложились в лимит: {len(result.data)} > {settings.target_bytes}"
+            )
+        if max(result.width, result.height) > 800:
+            raise AssertionError(
+                f"не сработало ограничение размера: {result.width}×{result.height}"
+            )
+        return (f"{len(raw) // 1024} КБ → {len(result.data) // 1024} КБ, "
+                f"{result.width}×{result.height}, качество {result.quality}")
 
     report.check("Подгонка под лимит", compression)
 
@@ -155,11 +169,13 @@ def run(report_path: Path | None = None) -> int:
         buffer = io.BytesIO()
         _sample(500, 500).save(buffer, format="JPEG", quality=90)
         raw = buffer.getvalue()
-        data, _, status, _, _, _, _ = compress_bytes(
-            raw, Settings(target_mb=5.0, max_side_enabled=False)
-        )
-        if status is not Status.LOSSLESS:
-            raise AssertionError(f"ожидали режим без потерь, получили {status.value}")
+        result = compress_bytes(raw, Settings(target_mb=5.0, max_side_enabled=False))
+        if result.status is not Status.LOSSLESS:
+            raise AssertionError(
+                f"ожидали режим без потерь, получили {result.status.value}"
+                + (f" ({result.note})" if result.note else "")
+            )
+        data = result.data
         from PIL import Image
 
         with Image.open(io.BytesIO(data)) as after, Image.open(io.BytesIO(raw)) as before:

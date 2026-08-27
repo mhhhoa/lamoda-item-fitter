@@ -117,8 +117,10 @@ class Settings:
         copy.min_side = max(16, min(copy.min_side, copy.max_side))
         copy.target_mb = max(0.05, copy.target_mb)
         if copy.mode == MODE_LOSSLESS:
-            # В режиме без потерь пережимать и уменьшать нечего.
+            # Уменьшение картинки — это и есть потеря, так что в этом режиме
+            # ограничение по стороне не действует, как и добор уменьшением.
             copy.allow_downscale = False
+            copy.max_side_enabled = False
         return copy
 
     # --- Сериализация ----------------------------------------------------

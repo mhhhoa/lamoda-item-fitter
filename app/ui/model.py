@@ -31,6 +31,7 @@ STATUS_LABELS = {
     Status.OK: "Готово",
     Status.LOSSLESS: "Без потерь",
     Status.COPIED: "Скопирован",
+    Status.NOT_LOSSLESS: "Без потерь не вышло",
     Status.TOO_BIG: "Не влез в лимит",
     Status.SKIPPED: "Пропущен",
     Status.ERROR: "Ошибка",
@@ -40,6 +41,7 @@ STATUS_COLORS = {
     Status.OK: COLORS["success"],
     Status.LOSSLESS: COLORS["success"],
     Status.COPIED: COLORS["text_muted"],
+    Status.NOT_LOSSLESS: COLORS["warning"],
     Status.TOO_BIG: COLORS["warning"],
     Status.SKIPPED: COLORS["text_faint"],
     Status.ERROR: COLORS["danger"],
@@ -110,7 +112,9 @@ class ThumbnailLoader(QObject):
         self._pool.start(_ThumbTask(row, path, self._signals))
 
     def clear(self) -> None:
+        """Снимает очередь превью и дожидается тех, что уже в работе."""
         self._pool.clear()
+        self._pool.waitForDone(2000)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +218,8 @@ class FileTableModel(QAbstractTableModel):
     def _details(result: Result) -> str:
         if result.status is Status.ERROR:
             return result.message
+        if result.status is Status.NOT_LOSSLESS:
+            return result.message.replace("Точный lossless невозможен: ", "")
         parts = []
         if result.width and result.height:
             parts.append(f"{result.width}×{result.height}")

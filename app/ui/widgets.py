@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QDoubleSpinBox,
     QSpinBox,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -136,11 +137,18 @@ class SliderRow(QWidget):
 
 
 class DropZone(QFrame):
-    """Область, куда бросают файлы и папки."""
+    """Область, куда бросают файлы и папки.
+
+    Два готовых вида вместо пересборки раскладки: просторный, пока список
+    пуст, и узкая полоска, когда файлы уже добавлены и место нужнее списку.
+    """
 
     dropped = Signal(list)
     browse_files = Signal()
     browse_folder = Signal()
+
+    FULL_HEIGHT = 118
+    COMPACT_HEIGHT = 62
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -148,66 +156,65 @@ class DropZone(QFrame):
         self.setAcceptDrops(True)
         self.setProperty("hover", "false")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setMinimumHeight(118)
 
-        self._compact = False
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(20, 14, 20, 14)
-        self._layout.setSpacing(3)
+        self._stack = QStackedLayout(self)
+        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._stack.addWidget(self._build_full())
+        self._stack.addWidget(self._build_compact())
+        self.set_compact(False)
 
-        self.title = QLabel("Перетащите сюда фотографии или папки")
-        self.title.setObjectName("dropTitle")
-        self.subtitle = QLabel("Вложенные папки разбираются целиком")
-        self.subtitle.setObjectName("dropHint")
+    def _buttons(self) -> QHBoxLayout:
+        layout = QHBoxLayout()
+        layout.setSpacing(8)
+        for text, signal in (
+            ("Выбрать файлы", self.browse_files),
+            ("Выбрать папку", self.browse_folder),
+        ):
+            button = QPushButton(text)
+            button.clicked.connect(signal)
+            layout.addWidget(button)
+        return layout
 
-        files_button = QPushButton("Выбрать файлы")
-        folder_button = QPushButton("Выбрать папку")
-        files_button.clicked.connect(self.browse_files)
-        folder_button.clicked.connect(self.browse_folder)
-        self._buttons = QHBoxLayout()
-        self._buttons.setSpacing(8)
-        self._buttons.addWidget(files_button)
-        self._buttons.addWidget(folder_button)
+    def _build_full(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(3)
+        layout.setAlignment(Qt.AlignCenter)
 
-        self._build_layout()
+        title = QLabel("Перетащите сюда фотографии или папки")
+        title.setObjectName("dropTitle")
+        title.setAlignment(Qt.AlignCenter)
 
-    def _build_layout(self) -> None:
-        """Просторный вид для пустого списка, узкая полоска — когда файлы есть."""
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().setParent(self)
-            elif item.layout() is not None:
-                item.layout().setParent(None)
+        subtitle = QLabel("Вложенные папки разбираются целиком")
+        subtitle.setObjectName("dropHint")
+        subtitle.setAlignment(Qt.AlignCenter)
 
-        if self._compact:
-            self.setMinimumHeight(0)
-            self.setFixedHeight(62)
-            self.subtitle.setVisible(False)
-            row = QHBoxLayout()
-            row.setSpacing(12)
-            row.addWidget(self.title)
-            row.addStretch(1)
-            row.addLayout(self._buttons)
-            self._layout.addLayout(row)
-            self.title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        else:
-            self.setMinimumHeight(118)
-            self.setMaximumHeight(16777215)
-            self.subtitle.setVisible(True)
-            self._layout.setAlignment(Qt.AlignCenter)
-            self.title.setAlignment(Qt.AlignCenter)
-            self.subtitle.setAlignment(Qt.AlignCenter)
-            self._buttons.setAlignment(Qt.AlignCenter)
-            self._layout.addWidget(self.title)
-            self._layout.addWidget(self.subtitle)
-            self._layout.addSpacing(8)
-            self._layout.addLayout(self._buttons)
+        buttons = self._buttons()
+        buttons.setAlignment(Qt.AlignCenter)
+
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addSpacing(8)
+        layout.addLayout(buttons)
+        return page
+
+    def _build_compact(self) -> QWidget:
+        page = QWidget()
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(20, 12, 20, 12)
+        layout.setSpacing(12)
+
+        title = QLabel("Перетащите фото или папки")
+        title.setObjectName("dropTitle")
+        layout.addWidget(title)
+        layout.addStretch(1)
+        layout.addLayout(self._buttons())
+        return page
 
     def set_compact(self, compact: bool) -> None:
-        if compact != self._compact:
-            self._compact = compact
-            self._build_layout()
+        self._stack.setCurrentIndex(1 if compact else 0)
+        self.setFixedHeight(self.COMPACT_HEIGHT if compact else self.FULL_HEIGHT)
 
     # --- перетаскивание ---------------------------------------------------
     def _set_hover(self, hovering: bool) -> None:
@@ -243,4 +250,6 @@ def human_size(size: int) -> str:
         return f"{size} Б"
     if size < 1024 * 1024:
         return f"{size / 1024:.0f} КБ"
-    return f"{size / 1024 / 1024:.2f} МБ".replace(".00 МБ", " МБ")
+    megabytes = size / 1024 / 1024
+    # Сотые доли мегабайта ничего не решают, зато занимают место в колонке.
+    return f"{megabytes:.1f} МБ".replace(".0 МБ", " МБ")

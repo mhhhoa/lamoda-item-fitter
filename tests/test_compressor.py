@@ -25,18 +25,18 @@ def open_bytes(data: bytes) -> Image.Image:
 def test_smart_mode_hits_the_target(photo):
     raw = encode_jpeg(photo(1600, 2000))
     settings = Settings(target_mb=0.4, max_side_enabled=False)
-    data, _, status, _, _, _, _ = compress_bytes(raw, settings)
-    assert status is Status.OK
-    assert len(data) <= settings.target_bytes
+    result = compress_bytes(raw, settings)
+    assert result.status is Status.OK
+    assert len(result.data) <= settings.target_bytes
 
 
 def test_target_reached_by_downscaling_when_quality_is_not_enough(photo):
     raw = encode_jpeg(photo(2400, 3000))
     settings = Settings(target_mb=0.08, min_quality=75, max_side_enabled=False, min_side=100)
-    data, _, status, width, height, _, _ = compress_bytes(raw, settings)
-    assert status is Status.OK
-    assert len(data) <= settings.target_bytes
-    assert width < 2400 and height < 3000
+    result = compress_bytes(raw, settings)
+    assert result.status is Status.OK
+    assert len(result.data) <= settings.target_bytes
+    assert result.width < 2400 and result.height < 3000
 
 
 def test_downscale_stops_at_the_minimum_side(photo):
@@ -45,18 +45,18 @@ def test_downscale_stops_at_the_minimum_side(photo):
         target_mb=0.01, min_quality=60, max_side_enabled=False,
         min_side_enabled=True, min_side=1000,
     )
-    _, _, status, width, height, _, _ = compress_bytes(raw, settings)
-    assert status is Status.TOO_BIG
-    assert min(width, height) >= 1000
+    result = compress_bytes(raw, settings)
+    assert result.status is Status.TOO_BIG
+    assert min(result.width, result.height) >= 1000
 
 
 def test_manual_mode_ignores_the_limit(photo):
     raw = encode_jpeg(photo(1200, 1200))
     settings = Settings(mode=MODE_MANUAL, quality=95, target_mb=0.05, max_side_enabled=False)
-    data, _, status, _, _, quality, _ = compress_bytes(raw, settings)
-    assert quality == 95
-    assert status is Status.TOO_BIG  # честно сообщаем, что в лимит не попали
-    assert len(data) > settings.target_bytes
+    result = compress_bytes(raw, settings)
+    assert result.quality == 95
+    assert result.status is Status.TOO_BIG  # честно сообщаем, что в лимит не попали
+    assert len(result.data) > settings.target_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -68,26 +68,52 @@ def test_lossless_path_keeps_every_pixel(photo):
     raw = encode_jpeg(original)
     settings = Settings(target_mb=5.0, max_side_enabled=False)
 
-    data, _, status, _, _, _, _ = compress_bytes(raw, settings)
+    result = compress_bytes(raw, settings)
 
-    assert status is Status.LOSSLESS
-    assert len(data) < len(raw)
-    assert open_bytes(data).tobytes() == open_bytes(raw).tobytes()
+    assert result.status is Status.LOSSLESS
+    assert len(result.data) < len(raw)
+    assert open_bytes(result.data).tobytes() == open_bytes(raw).tobytes()
 
 
 def test_lossless_path_is_skipped_when_a_resize_is_required(photo):
     raw = encode_jpeg(photo(3000, 3000))
     settings = Settings(target_mb=50.0, max_side_enabled=True, max_side=1000)
-    _, _, status, width, height, _, _ = compress_bytes(raw, settings)
-    assert status is not Status.LOSSLESS
-    assert max(width, height) == 1000
+    result = compress_bytes(raw, settings)
+    assert result.status is not Status.LOSSLESS
+    assert max(result.width, result.height) == 1000
 
 
 def test_lossless_mode_reports_when_it_cannot_fit(photo):
     raw = encode_jpeg(photo(2000, 2500))
     settings = Settings(mode=MODE_LOSSLESS, target_mb=0.2, max_side_enabled=False)
-    _, _, status, _, _, _, _ = compress_bytes(raw, settings)
-    assert status is Status.TOO_BIG
+
+    result = compress_bytes(raw, settings)
+
+    assert result.status is Status.TOO_BIG
+    assert result.note  # объясняем, почему без потерь не получилось
+
+
+def test_lossless_mode_admits_when_pixels_had_to_change(photo):
+    """Разворот по EXIF переписывает кадр — «без потерь» тут обещать нельзя."""
+    exif = Image.Exif()
+    exif[274] = 6
+    raw = encode_jpeg(photo(600, 800), exif=exif)
+
+    result = compress_bytes(raw, Settings(mode=MODE_LOSSLESS, target_mb=20.0))
+
+    assert result.status is Status.NOT_LOSSLESS
+    assert "метаданн" in result.note or "EXIF" in result.note
+
+
+def test_lossless_mode_keeps_resolution_untouched(photo):
+    """Уменьшение — это потеря, поэтому лимит по стороне тут не действует."""
+    raw = encode_jpeg(photo(2000, 2000))
+    settings = Settings(mode=MODE_LOSSLESS, max_side_enabled=True, max_side=500,
+                        target_mb=20.0)
+
+    result = compress_bytes(raw, settings)
+
+    assert (result.width, result.height) == (2000, 2000)
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +123,8 @@ def test_lossless_mode_reports_when_it_cannot_fit(photo):
 def test_max_side_is_applied(photo):
     raw = encode_jpeg(photo(3000, 1500))
     settings = Settings(max_side_enabled=True, max_side=1200, target_mb=5.0)
-    _, _, _, width, height, _, _ = compress_bytes(raw, settings)
-    assert (width, height) == (1200, 600)
+    result = compress_bytes(raw, settings)
+    assert (result.width, result.height) == (1200, 600)
 
 
 def test_png_with_alpha_becomes_jpeg_on_white(photo):
@@ -108,10 +134,10 @@ def test_png_with_alpha_becomes_jpeg_on_white(photo):
     source.save(buffer, format="PNG")
 
     settings = Settings(output_format="jpeg", target_mb=5.0, max_side_enabled=False)
-    data, fmt, _, _, _, _, _ = compress_bytes(buffer.getvalue(), settings)
+    encoded = compress_bytes(buffer.getvalue(), settings)
 
-    assert fmt == "jpeg"
-    result = open_bytes(data)
+    assert encoded.fmt == "jpeg"
+    result = open_bytes(encoded.data)
     assert result.mode == "RGB"
     assert result.getpixel((10, 10)) == (255, 255, 255)
 
@@ -122,8 +148,7 @@ def test_auto_format_turns_heic_into_jpeg(photo):
     pillow_heif.from_pillow(photo(600, 600)).save(buffer, format="HEIF", quality=90)
 
     settings = Settings(output_format="auto", target_mb=5.0, max_side_enabled=False)
-    _, fmt, _, _, _, _, _ = compress_bytes(buffer.getvalue(), settings)
-    assert fmt == "jpeg"
+    assert compress_bytes(buffer.getvalue(), settings).fmt == "jpeg"
 
 
 def test_exif_orientation_is_baked_into_the_pixels(photo):
@@ -132,10 +157,10 @@ def test_exif_orientation_is_baked_into_the_pixels(photo):
     raw = encode_jpeg(photo(600, 1000), exif=exif)
 
     settings = Settings(target_mb=5.0, max_side_enabled=False, keep_metadata=False)
-    data, _, _, width, height, _, _ = compress_bytes(raw, settings)
+    result = compress_bytes(raw, settings)
 
-    assert (width, height) == (1000, 600)
-    assert open_bytes(data).getexif().get(274, 1) in (0, 1)
+    assert (result.width, result.height) == (1000, 600)
+    assert open_bytes(result.data).getexif().get(274, 1) in (0, 1)
 
 
 def test_metadata_is_dropped_by_default_and_kept_on_request(photo):
@@ -143,15 +168,15 @@ def test_metadata_is_dropped_by_default_and_kept_on_request(photo):
     exif[271] = "TestCamera"
     raw = encode_jpeg(photo(700, 700), exif=exif)
 
-    stripped, _, _, _, _, _, _ = compress_bytes(
+    stripped = compress_bytes(
         raw, Settings(target_mb=0.2, max_side_enabled=False, keep_metadata=False)
     )
-    kept, _, _, _, _, _, _ = compress_bytes(
+    kept = compress_bytes(
         raw, Settings(target_mb=0.2, max_side_enabled=False, keep_metadata=True)
     )
 
-    assert open_bytes(stripped).getexif().get(271) is None
-    assert open_bytes(kept).getexif().get(271) == "TestCamera"
+    assert open_bytes(stripped.data).getexif().get(271) is None
+    assert open_bytes(kept.data).getexif().get(271) == "TestCamera"
 
 
 # ---------------------------------------------------------------------------

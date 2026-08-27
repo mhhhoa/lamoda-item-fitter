@@ -136,6 +136,24 @@ class Pipeline(QObject):
         if self._running:
             self._cancel.set()
 
+    def wait(self, milliseconds: int = 15000) -> bool:
+        """Дожидается остановки задач — иначе они эмитят сигналы в мёртвое окно.
+
+        Пустой пул означает, что работы больше нет, даже если отчёты о
+        последних задачах ещё не разобраны циклом событий.
+        """
+        done = self._pool.waitForDone(milliseconds)
+        if done:
+            self._running = False
+        else:
+            # Не дождались: отцепляем сигналы, чтобы опоздавшая задача не
+            # выстрелила в уже разрушенное окно.
+            try:
+                self._signals.done.disconnect()
+            except RuntimeError:
+                pass
+        return done
+
     def _on_task_done(self, index: int, result: Result) -> None:
         self._summary.add(result)
         self.item_done.emit(index, result)

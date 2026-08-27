@@ -29,16 +29,16 @@ try:  # HEIC/HEIF с айфонов
     import pillow_heif
 
     pillow_heif.register_heif_opener()
-    HEIF_AVAILABLE = True
-except Exception:  # pragma: no cover - зависит от сборки
-    HEIF_AVAILABLE = False
+    HEIF_AVAILABLE, HEIF_ERROR = True, ""
+except Exception as _error:  # pragma: no cover - зависит от сборки
+    HEIF_AVAILABLE, HEIF_ERROR = False, repr(_error)
 
 try:  # честная lossless-оптимизация JPEG
     import mozjpeg_lossless_optimization as mozjpeg
 
-    MOZJPEG_AVAILABLE = True
-except Exception:  # pragma: no cover - зависит от сборки
-    MOZJPEG_AVAILABLE = False
+    MOZJPEG_AVAILABLE, MOZJPEG_ERROR = True, ""
+except Exception as _error:  # pragma: no cover - зависит от сборки
+    MOZJPEG_AVAILABLE, MOZJPEG_ERROR = False, repr(_error)
 
 # Фотографии с современных камер легко перешагивают дефолтный лимит Pillow,
 # а «бомбу» в 512 Мпикс в папке с товарными съёмками ждать не приходится.
@@ -55,6 +55,7 @@ class Status(str, Enum):
     OK = "ok"                # пережали, уложились
     LOSSLESS = "lossless"    # уложились совсем без потерь
     COPIED = "copied"        # уже подходил, скопировали как есть
+    NOT_LOSSLESS = "not_lossless"  # без потерь не вышло, сохранён на максимуме
     TOO_BIG = "too_big"      # сжали как смогли, но в лимит не влезли
     SKIPPED = "skipped"      # ничего не делали
     ERROR = "error"
@@ -82,6 +83,20 @@ class Result:
         if not self.source_size:
             return 0.0
         return self.output_size / self.source_size
+
+
+@dataclass
+class Encoded:
+    """Что получилось на выходе кодировщика, до записи на диск."""
+
+    data: bytes
+    fmt: str
+    status: Status
+    width: int
+    height: int
+    quality: int | None = None
+    scale: float = 1.0
+    note: str = ""
 
 
 class Cancelled(Exception):
@@ -156,6 +171,29 @@ def _flatten(image: Image.Image) -> Image.Image:
     background = Image.new("RGB", rgba.size, FLATTEN_BACKGROUND)
     background.paste(rgba, mask=rgba.split()[-1])
     return background
+
+
+def pixel_changing_step(image: Image.Image, settings: Settings, target_format: str) -> str:
+    """Называет преобразование, которое изменит пиксели, либо пустую строку.
+
+    Нужно, чтобы не обещать «без потерь» там, где кадр всё-таки переписан:
+    развёрнут по EXIF, пересчитан в sRGB или лишён прозрачности.
+    """
+    if image.getexif().get(274, 1) not in (0, 1):
+        return "разворот по EXIF"
+
+    icc = image.info.get("icc_profile")
+    if settings.convert_to_srgb and icc and not _is_srgb(icc):
+        return "пересчёт цвета в sRGB"
+
+    supports_alpha = target_format in {"png", "webp", "avif"}
+    has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
+    if has_alpha and not supports_alpha:
+        return "заливка прозрачности белым"
+
+    if image.mode not in ("RGB", "RGBA", "L", "LA"):
+        return f"смена цветовой модели ({image.mode})"
+    return ""
 
 
 def prepare_image(image: Image.Image, settings: Settings, target_format: str) -> Image.Image:
@@ -474,27 +512,30 @@ def _try_lossless_jpeg(
     image: Image.Image,
     settings: Settings,
     target: int | None,
-) -> bytes | None:
+) -> tuple[bytes | None, str]:
     """Пробует уложиться в лимит, вообще не трогая пиксели.
 
-    Работает, только если картинка уже в нужном разрешении и её цветовой
-    профиль не требует пересчёта — иначе «без потерь» было бы обманом.
+    Возвращает байты и пустую причину при успехе, иначе None и объяснение,
+    почему настоящий lossless тут неприменим. Молча подменять его пережатием
+    нельзя: пользователь выбрал режим именно ради неизменных пикселей.
     """
-    if not MOZJPEG_AVAILABLE or (image.format or "").upper() not in {"JPEG", "MPO"}:
-        return None
+    if not MOZJPEG_AVAILABLE:
+        return None, "библиотека оптимизации JPEG недоступна"
+    if (image.format or "").upper() not in {"JPEG", "MPO"}:
+        return None, "исходник не JPEG — перекодирование неизбежно"
     if settings.max_side_enabled and max(image.size) > settings.max_side:
-        return None
+        return None, "нужно уменьшить разрешение"
     icc = image.info.get("icc_profile")
     if settings.convert_to_srgb and icc and not _is_srgb(icc):
-        return None
+        return None, "цвета нужно пересчитать в sRGB"
     if not settings.keep_metadata and image.getexif().get(274, 1) not in (0, 1):
         # Ориентация зашита в EXIF: выбросив метаданные, мы положим фото набок.
-        return None
+        return None, "поворот записан в метаданных, которые просили удалить"
 
     optimized = _mozjpeg_pass(raw, settings)
     if target is not None and len(optimized) > target:
-        return None
-    return optimized if len(optimized) <= len(raw) else raw
+        return None, "без потерь в лимит не уложиться"
+    return (optimized if len(optimized) <= len(raw) else raw), ""
 
 
 # ---------------------------------------------------------------------------
@@ -505,11 +546,8 @@ def compress_bytes(
     raw: bytes,
     settings: Settings,
     check_cancel=lambda: None,
-) -> tuple[bytes, str, Status, int, int, int | None, float]:
-    """Сжимает картинку в памяти.
-
-    Возвращает (байты, ключ формата, статус, ширина, высота, качество, масштаб).
-    """
+) -> Encoded:
+    """Сжимает картинку в памяти."""
     settings = settings.normalized()
     target = settings.target_bytes
 
@@ -521,14 +559,18 @@ def compress_bytes(
         keeps_format = fmt == (source_format or "").lower() or (
             fmt == "jpeg" and (source_format or "").upper() in {"JPEG", "MPO"}
         )
+        lossless_reason = ""
         if keeps_format and settings.mode in (MODE_SMART, MODE_LOSSLESS):
-            lossless = _try_lossless_jpeg(raw, opened, settings, target)
+            lossless, lossless_reason = _try_lossless_jpeg(raw, opened, settings, target)
             if lossless is not None:
-                return (
-                    lossless, fmt, Status.LOSSLESS,
-                    opened.width, opened.height, None, 1.0,
+                return Encoded(
+                    lossless, fmt, Status.LOSSLESS, opened.width, opened.height
                 )
+        elif settings.mode == MODE_LOSSLESS:
+            lossless_reason = "формат вывода отличается от исходного"
 
+        # Считаем до преобразований: потом исходные метаданные уже не спросить.
+        transform = pixel_changing_step(opened, settings, fmt)
         image = prepare_image(opened, settings, fmt)
 
     original_size = image.size
@@ -538,39 +580,53 @@ def compress_bytes(
 
     if settings.mode == MODE_LOSSLESS:
         data = encode(image, fmt, 100, settings, lossless=True)
-        status = Status.OK if target is None or len(data) <= target else Status.TOO_BIG
-        return data, fmt, status, image.width, image.height, None, scale
+        # Обещать неизменные пиксели можно только если сама запись без потерь
+        # (PNG и WebP-lossless) и по дороге кадр ничем не переписали. JPEG сюда
+        # попадает лишь когда быстрый путь отказал, то есть пиксели изменятся.
+        exact = fmt in {"png", "webp"} and keeps_format and not transform
+        if target is not None and len(data) > target:
+            # Не влезли — это важнее: такой файл площадка не примет.
+            status = Status.TOO_BIG
+            note = lossless_reason if not exact else ""
+        elif exact:
+            status, note = Status.LOSSLESS, ""
+        else:
+            status = Status.NOT_LOSSLESS
+            note = transform or lossless_reason
+        return Encoded(data, fmt, status, image.width, image.height, None, scale, note)
 
     if settings.mode == MODE_MANUAL or target is None:
         quality = settings.quality if fmt in LOSSY_FORMATS else None
         data = encode(image, fmt, settings.quality, settings)
         status = Status.OK if target is None or len(data) <= target else Status.TOO_BIG
-        return data, fmt, status, image.width, image.height, quality, scale
+        return Encoded(data, fmt, status, image.width, image.height, quality, scale)
 
     # Умный режим: сначала пытаемся сохранить разрешение, играя качеством.
     if fmt in LOSSY_FORMATS:
         attempt = _search_quality(image, fmt, settings, target, scale, check_cancel)
         if attempt is not None:
-            return (
+            return Encoded(
                 finalize(attempt, fmt, settings), fmt, Status.OK,
                 attempt.image.width, attempt.image.height, attempt.quality, scale,
             )
     else:
         data = encode(image, fmt, settings.quality, settings)
         if len(data) <= target:
-            return data, fmt, Status.OK, image.width, image.height, None, scale
+            return Encoded(data, fmt, Status.OK, image.width, image.height, None, scale)
 
     if not settings.allow_downscale:
-        data = encode(image, fmt, settings.min_quality if fmt in LOSSY_FORMATS else settings.quality, settings)
-        return (
+        lossy = fmt in LOSSY_FORMATS
+        data = encode(image, fmt, settings.min_quality if lossy else settings.quality, settings)
+        return Encoded(
             data, fmt, Status.TOO_BIG, image.width, image.height,
-            settings.min_quality if fmt in LOSSY_FORMATS else None, scale,
+            settings.min_quality if lossy else None, scale,
+            note="уменьшение картинки выключено",
         )
 
     best = _search_scale(image, fmt, settings, target, check_cancel)
     data = finalize(best, fmt, settings)
     status = Status.OK if len(data) <= target else Status.TOO_BIG
-    return (
+    return Encoded(
         data, fmt, status,
         best.image.width, best.image.height, best.quality, scale * best.scale,
     )
@@ -606,7 +662,9 @@ def compress_file(
         return Result(Status.COPIED, source, destination, source_size, source_size,
                       width, height, message="Уже подходит, скопирован без изменений")
 
-    data, fmt, status, width, height, quality, scale = compress_bytes(raw, settings, check_cancel)
+    encoded = compress_bytes(raw, settings, check_cancel)
+    data, fmt, status = encoded.data, encoded.fmt, encoded.status
+    width, height = encoded.width, encoded.height
 
     destination = destination_for(output_extension(fmt))
     if destination is None:
@@ -629,13 +687,28 @@ def compress_file(
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
 
-    message = ""
+    message = encoded.note
     if status is Status.LOSSLESS:
         message = "Без потери качества"
-    elif status is Status.TOO_BIG:
+    elif status is Status.NOT_LOSSLESS:
+        message = f"Точный lossless невозможен: {encoded.note}" if encoded.note else \
+                  "Точный lossless невозможен, сохранено на максимуме качества"
+    elif status is Status.TOO_BIG and not message:
         message = "Не влезает в лимит даже на минимальных настройках"
     return Result(status, source, destination, source_size, len(data),
-                  width, height, quality, scale, message)
+                  width, height, encoded.quality, encoded.scale, message)
+
+
+def format_from_suffix(suffix: str) -> str:
+    """Формат по расширению файла — для случаев, когда открывать его незачем."""
+    suffix = suffix.lower()
+    if suffix in (".jpg", ".jpeg", ".jpe", ".jfif"):
+        return "jpeg"
+    if suffix in (".heic", ".heif", ".hif"):
+        return "heif"
+    if suffix in (".tif", ".tiff"):
+        return "tiff"
+    return suffix.lstrip(".")
 
 
 def _can_copy_as_is(
@@ -648,9 +721,7 @@ def _can_copy_as_is(
     """
     if target is None or source_size > target or not settings.copy_when_already_small:
         return False
-    from .jobs import _format_from_suffix
-
-    if resolve_output_format(settings, _format_from_suffix(source.suffix)) != _extension_format(source):
+    if resolve_output_format(settings, format_from_suffix(source.suffix)) != _extension_format(source):
         return False
     if _needs_resize(raw, settings):
         return False
@@ -670,6 +741,7 @@ def _has_metadata(raw: bytes) -> bool:
 
 
 def _extension_format(path: Path) -> str:
+    """Формат самого файла на диске — без учёта выбранного формата вывода."""
     suffix = path.suffix.lower()
     if suffix in (".jpg", ".jpeg", ".jpe", ".jfif"):
         return "jpeg"

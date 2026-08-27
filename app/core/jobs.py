@@ -6,7 +6,6 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from .compressor import resolve_output_format
 from .settings import CONFLICT_OVERWRITE, CONFLICT_SKIP, INPUT_EXTENSIONS, Settings
 
 
@@ -121,14 +120,6 @@ class DestinationPlanner:
                     return candidate
         return None
 
-    def guess_extension(self, job: Job) -> str:
-        """Предсказывает расширение результата, не открывая файл."""
-        from .compressor import output_extension
-        from .jobs import _format_from_suffix
-
-        fmt = resolve_output_format(self._settings, _format_from_suffix(job.source.suffix))
-        return output_extension(fmt)
-
     # --- внутреннее ------------------------------------------------------
     @staticmethod
     def _key(path: Path) -> str:
@@ -149,14 +140,3 @@ class DestinationPlanner:
             return a.resolve() == b.resolve()
         except OSError:
             return str(a).lower() == str(b).lower()
-
-
-def _format_from_suffix(suffix: str) -> str:
-    suffix = suffix.lower()
-    if suffix in (".jpg", ".jpeg", ".jpe", ".jfif"):
-        return "jpeg"
-    if suffix in (".heic", ".heif", ".hif"):
-        return "heif"
-    if suffix in (".tif", ".tiff"):
-        return "tiff"
-    return suffix.lstrip(".")

@@ -33,8 +33,8 @@ from ..core.settings import (
 from .widgets import Card, MegabyteSpinBox, SliderRow, hint, section_title
 
 MODE_HINTS = {
-    MODE_LOSSLESS: "Пиксели не меняются вообще. Экономия 5–15%, "
-                   "в жёсткий лимит попадает не всегда.",
+    MODE_LOSSLESS: "Пиксели не меняются вообще: ни качество, ни разрешение. "
+                   "Экономия 5–15%, в жёсткий лимит попадает не всегда.",
     MODE_SMART: "Держит качество настолько высоким, насколько позволяет лимит: "
                 "сначала пробует без потерь, потом снижает качество, и лишь в "
                 "крайнем случае уменьшает картинку.",
@@ -144,7 +144,7 @@ class SettingsPanel(QWidget):
         return card
 
     def _build_resolution_card(self) -> Card:
-        card = Card()
+        card = self.resolution_card = Card()
         card.add(section_title("Разрешение"))
 
         row = QHBoxLayout()
@@ -385,6 +385,9 @@ class SettingsPanel(QWidget):
         self.quality_row.label.setText(
             "Верхняя планка качества" if mode == MODE_SMART else "Качество"
         )
+
+        # Уменьшать картинку в режиме без потерь нельзя по определению.
+        self.resolution_card.setEnabled(mode != MODE_LOSSLESS)
 
         limited = self.limit_check.isChecked()
         self.limit_spin.setEnabled(limited)

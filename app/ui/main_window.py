@@ -39,7 +39,7 @@ class MainWindow(QWidget):
         self.settings = settings
         self.setObjectName("root")
         self.setWindowTitle("Lamoda Item Fitter — сжатие фото под маркетплейс")
-        self.setMinimumSize(1080, 680)
+        self.setMinimumSize(1200, 660)
         self.resize(1320, 820)
         self.setAcceptDrops(True)
 
@@ -138,16 +138,16 @@ class MainWindow(QWidget):
         # Имя файла тянется за шириной окна, остальное держит заданный размер.
         fixed = {
             FileTableModel.COL_THUMB: THUMB_SIZE + 12,
-            FileTableModel.COL_BEFORE: 88,
-            FileTableModel.COL_AFTER: 88,
-            FileTableModel.COL_SAVED: 90,
+            FileTableModel.COL_BEFORE: 84,
+            FileTableModel.COL_AFTER: 84,
+            FileTableModel.COL_SAVED: 84,
         }
         for column, width in fixed.items():
             header.setSectionResizeMode(column, QHeaderView.Fixed)
             self.table.setColumnWidth(column, width)
         for column, width in (
-            (FileTableModel.COL_FOLDER, 110),
-            (FileTableModel.COL_STATUS, 220),
+            (FileTableModel.COL_FOLDER, 104),
+            (FileTableModel.COL_STATUS, 200),
         ):
             header.setSectionResizeMode(column, QHeaderView.Interactive)
             self.table.setColumnWidth(column, width)
@@ -425,6 +425,10 @@ class MainWindow(QWidget):
                 event.ignore()
                 return
             self.pipeline.cancel()
+        # Задача, дописывающая файл, эмитит сигнал в уже разрушенное окно —
+        # так теряется и результат, и приложение целиком.
+        self.pipeline.wait()
+        self.model.clear()
         self.panel.collect().save()
         event.accept()
 
