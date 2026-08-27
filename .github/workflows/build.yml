@@ -10,6 +10,7 @@ jobs:
   tests:
     name: Тесты
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +40,7 @@ jobs:
     name: Сборка exe для Windows
     runs-on: windows-latest
     needs: tests
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

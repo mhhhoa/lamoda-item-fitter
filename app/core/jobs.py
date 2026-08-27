@@ -106,8 +106,12 @@ class DestinationPlanner:
 
             if self._settings.on_conflict == CONFLICT_SKIP:
                 return None
+            # «Перезаписать» относится к тому, что лежало на диске до запуска.
+            # Затирать результат, записанный этим же прогоном пару секунд
+            # назад, — это потерять файл, а не перезаписать старый.
             if (
                 self._settings.on_conflict == CONFLICT_OVERWRITE
+                and self._key(candidate) not in self._taken
                 and not self._same_file(candidate, job.source)
             ):
                 self._taken.add(self._key(candidate))

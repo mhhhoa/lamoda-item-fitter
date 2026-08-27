@@ -55,6 +55,24 @@ def test_planner_never_overwrites_the_source(tree):
     assert destination.name == "front_1.jpg"
 
 
+def test_overwrite_does_not_eat_results_of_the_same_run(tree, tmp_path):
+    """Перезапись касается старых файлов, а не того, что мы только что создали."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "front.jpg").write_text("старый файл", encoding="utf-8")
+    settings = Settings(
+        output_dir=str(out), keep_structure=False, on_conflict=CONFLICT_OVERWRITE
+    )
+    planner = DestinationPlanner(settings)
+
+    first = planner.reserve(Job(tree / "dress_blue" / "front.jpg", tree.parent), ".jpg")
+    second = planner.reserve(Job(tree / "dress_red" / "front.jpg", tree.parent), ".jpg")
+
+    assert first.name == "front.jpg"  # старый файл перезаписать можно
+    assert second.name == "front_1.jpg"  # а свежий результат — нельзя
+    assert first != second
+
+
 def test_planner_can_skip_existing(tree, tmp_path):
     out = tmp_path / "out"
     out.mkdir()

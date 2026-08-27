@@ -3,7 +3,7 @@
 import pytest
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from app.core.settings import Settings
 from app.ui.main_window import MainWindow
@@ -16,6 +16,17 @@ def qt_app():
     application.setStyle("Fusion")
     application.setStyleSheet(stylesheet())
     return application
+
+
+@pytest.fixture(scope="session", autouse=True)
+def silence_dialogs(qt_app):
+    """Модальный вопрос при закрытии некому подтвердить — тест повиснет.
+
+    Подмена на всю сессию: разбор фикстуры окна происходит после отката
+    monkeypatch, и вопрос всплыл бы именно там.
+    """
+    QMessageBox.question = staticmethod(lambda *args, **kwargs: QMessageBox.Yes)
+    QMessageBox.warning = staticmethod(lambda *args, **kwargs: QMessageBox.Ok)
 
 
 @pytest.fixture
@@ -60,12 +71,10 @@ def test_stylesheet_resolves_asset_paths():
     assert "check.png" in css and "chevron_down.png" in css
 
 
-def test_closing_while_working_waits_for_the_queue(window, tree, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
-
-    window.add_paths([tree])
+def test_closing_while_working_waits_for_the_queue(window, tree):
+    # Одного небольшого файла достаточно: важно, что окно закрывается на
+    # живой очереди, а не сколько именно работы в ней стоит.
+    window.add_paths([tree / "dress_blue" / "back.jpg"])
     spin()
     window.panel.limit_spin.setValue(0.2)
     window._start()
