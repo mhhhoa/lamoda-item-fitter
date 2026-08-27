@@ -18,6 +18,9 @@ SUPPORTED_SUFFIXES = frozenset(
 #: белый, на который сводится альфа-канал до того, как оценён фон кадра
 ALPHA_MATTE = (255, 255, 255)
 
+#: под этим ключом запоминается размер исходника до уменьшения при чтении
+SOURCE_SIZE = "lif_source_size"
+
 # Кодировщик JPEG складывает оптимизированные таблицы Хаффмана в один буфер.
 # Штатных 64 КБ не хватает на детальный кадр 1524×2200, и запись падает с
 # «broken data stream» — поднимаем предел до заведомо достаточного.
@@ -68,10 +71,25 @@ def _to_srgb(image: Image.Image) -> Image.Image:
         return image
 
 
-def load_image(path: Path | str) -> Image.Image:
-    """Загружает кадр: разворот по EXIF, sRGB, RGB без альфы."""
+def load_image(path: Path | str, max_side: int | None = None) -> Image.Image:
+    """Загружает кадр: разворот по EXIF, sRGB, RGB без альфы.
+
+    `max_side` просит декодировать JPEG сразу уменьшенным. Для распознавания
+    полное разрешение не нужно, а снимок на 27 мегапикселей иначе занимает
+    сотни мегабайт в каждом рабочем процессе. Исходный размер запоминается:
+    без него расчёт нужного увеличения считал бы по уменьшенной копии и
+    отбраковывал бы годные кадры.
+    """
     try:
         image = Image.open(path)
+        original = image.size
+        if max_side and max(original) > max_side:
+            # draft гарантирует результат не меньше запроса по обеим сторонам,
+            # поэтому просим размер, ужатый по длинной стороне: иначе для
+            # широкого кадра декодер возьмёт лишний масштаб
+            ratio = max_side / max(original)
+            image.draft("RGB", (max(1, round(original[0] * ratio)),
+                                max(1, round(original[1] * ratio))))
         image.load()
     except UnidentifiedImageError as error:
         raise UnreadableImage(
@@ -92,7 +110,9 @@ def load_image(path: Path | str) -> Image.Image:
         image = image.convert("RGB")
         if icc:
             image.info["icc_profile"] = icc
-    return _to_srgb(image)
+    image = _to_srgb(image)
+    image.info[SOURCE_SIZE] = original
+    return image
 
 
 def _encode(image: Image.Image, fmt: str, quality: int, cfg: OutputCfg) -> bytes:

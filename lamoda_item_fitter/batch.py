@@ -183,7 +183,9 @@ def process_one(job: Job, preset: Preset) -> Outcome:
 def inspect_one(job: Job, preset: Preset) -> Outcome:
     """Быстрое распознавание без подгонки и без записи — для кнопки «Анализ»."""
     try:
-        image = load_image(job.source)
+        # распознавание идёт по уменьшенной копии, поэтому и читать кадр
+        # в полном разрешении незачем — это экономит сотни мегабайт
+        image = load_image(job.source, max_side=preset.analysis_max_side)
     except UnreadableImage as error:
         errors.log_only(f"чтение {job.source.name}", error)
         return Outcome(job, FAILED, reason=str(error))

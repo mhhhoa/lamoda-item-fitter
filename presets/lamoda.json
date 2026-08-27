@@ -53,5 +53,7 @@
   },
   "max_upscale": 8.0,
   "min_item_fraction": 0.002,
-  "max_working_megapixels": 80.0
+  "max_working_megapixels": 80.0,
+  "cropped_fit_mode": "contain",
+  "max_source_side": 8000
 }

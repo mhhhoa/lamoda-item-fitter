@@ -102,9 +102,12 @@ class Preset:
     fill: float = 1.0
     #: exclude — тень не входит в габарит; include — входит; remove — стирается
     shadow_mode: str = "exclude"
-    #: passthrough — макро переносится без подгонки; skip — пропускается;
-    #: fit — вписывается по видимой части
+    #: passthrough — макро приводится к холсту без правил полей; skip —
+    #: пропускается; fit — вписывается по видимой части
     cropped_policy: str = "passthrough"
+    #: как макро ложится на холст: contain — целиком по центру, ничего не
+    #: теряя; cover — заполняет холст с обрезкой краёв
+    cropped_fit_mode: str = "contain"
     #: длинная сторона рабочей копии, на которой идёт анализ
     analysis_max_side: int = 1500
     #: во сколько раз максимум допустимо увеличивать товар
@@ -114,6 +117,10 @@ class Preset:
     min_item_fraction: float = 0.002
     #: потолок промежуточного изображения, мегапикселей
     max_working_megapixels: float = 80.0
+    #: потолок длинной стороны исходника при подгонке. Товар всё равно ужимается
+    #: до 1124 px, поэтому больше этого разрешение не даёт качества, а память
+    #: съедает: снимок на 100 мегапикселей иначе занял бы гигабайт
+    max_source_side: int = 8000
     background: BackgroundCfg = field(default_factory=BackgroundCfg)
     mask: MaskCfg = field(default_factory=MaskCfg)
     output: OutputCfg = field(default_factory=OutputCfg)

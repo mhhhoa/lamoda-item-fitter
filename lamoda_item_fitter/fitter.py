@@ -24,6 +24,7 @@ from .background import (
     difference_map, estimate_background, feather_alpha, flatten_background, new_canvas,
 )
 from .config import Preset
+from .imageio import SOURCE_SIZE
 from .mask import Box, build_masks, refine_bbox
 
 FITTED = "fitted"
@@ -175,7 +176,11 @@ def inspect_image(image: Image.Image, preset: Preset) -> Verdict:
     не входит.
     """
     warnings: list[str] = []
-    metrics = FitMetrics(source_size=image.size)
+    # кадр мог быть прочитан уменьшенным ради экономии памяти — считаем и
+    # показываем размер настоящего исходника
+    source_size = tuple(image.info.get(SOURCE_SIZE, image.size))
+    draft_scale = image.width / source_size[0] if source_size[0] else 1.0
+    metrics = FitMetrics(source_size=source_size)
 
     analysis, analysis_scale = _analysis_copy(image, preset.analysis_max_side)
     background = estimate_background(analysis, preset.background.border_fraction)
@@ -201,14 +206,12 @@ def inspect_image(image: Image.Image, preset: Preset) -> Verdict:
         sides = ", ".join(names[s] for s in cropped)
         canvas_size = (preset.canvas.width, preset.canvas.height)
         if preset.cropped_policy == "passthrough":
-            if image.size == canvas_size:
-                return Verdict(
-                    PASSTHROUGH, metrics=metrics, warnings=warnings,
-                    reason=f"макро-кадр (товар выходит за край {sides}), переносится как есть")
-            return Verdict(
-                SKIPPED, metrics=metrics, warnings=warnings,
-                reason=f"макро-кадр (товар выходит за край {sides}), а размер не "
-                       f"{canvas_size[0]}×{canvas_size[1]} — обработайте вручную")
+            same_size = image.size == canvas_size
+            reason = (f"макро-кадр (товар выходит за край {sides}), "
+                      + ("размер уже верный" if same_size
+                         else f"приведён к {canvas_size[0]}×{canvas_size[1]} без правил полей"))
+            return Verdict(PASSTHROUGH, metrics=metrics, warnings=warnings,
+                           reason=reason, background=background)
         if preset.cropped_policy == "skip":
             return Verdict(SKIPPED, metrics=metrics, warnings=warnings,
                            reason=f"товар выходит за край {sides} — авто-подгонка невозможна")
@@ -231,15 +234,16 @@ def inspect_image(image: Image.Image, preset: Preset) -> Verdict:
     # предметный ли кадр вообще. Уточнение по оригиналу стоит дорого и делается
     # уже при подгонке.
     box_small = masks.item_bbox(preset.shadow_mode)
-    box_w = (box_small[2] - box_small[0] + 1) / analysis_scale
-    box_h = (box_small[3] - box_small[1] + 1) / analysis_scale
+    to_source = analysis_scale * draft_scale
+    box_w = (box_small[2] - box_small[0] + 1) / to_source
+    box_h = (box_small[3] - box_small[1] + 1) / to_source
     scale = min(preset.zone_width / box_w, preset.zone_height / box_h) * preset.fill
     metrics.scale = scale
 
     # Кадр может быть вообще не предметным: тогда «товаром» окажется пылинка,
     # блик или случайное пятно. Растягивать это на весь холст бессмысленно и
     # вдобавок съедает гигабайты памяти, поэтому отказываемся сразу и внятно.
-    frame_area = image.width * image.height
+    frame_area = source_size[0] * source_size[1]
     item_fraction = (box_w * box_h) / frame_area if frame_area else 0.0
     if item_fraction < preset.min_item_fraction:
         return Verdict(
@@ -266,14 +270,47 @@ def inspect_image(image: Image.Image, preset: Preset) -> Verdict:
                    shadow_excluded=shadow_excluded)
 
 
+def place_on_canvas(
+    image: Image.Image, preset: Preset, background: np.ndarray, mode: str = "contain"
+) -> Image.Image:
+    """Кладёт кадр на холст маркетплейса, не трогая композицию.
+
+    Для макро-кадров правила полей неприменимы: товар намеренно выходит за
+    край, и «габарита» у него нет. Поэтому здесь только приведение к нужному
+    размеру — кадр масштабируется целиком и ставится по центру.
+    """
+    width, height = preset.canvas.width, preset.canvas.height
+    if image.size == (width, height):
+        return image
+
+    if mode == "cover":
+        # заполняем холст целиком, лишнее уходит за край
+        scale = max(width / image.width, height / image.height)
+    else:
+        # вписываем целиком: ничего не теряется, поля добираются фоном
+        scale = min(width / image.width, height / image.height)
+
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    resized = image.resize(size, Image.LANCZOS, reducing_gap=3.0)
+    canvas = new_canvas(width, height, background)
+    canvas.paste(resized, ((width - size[0]) // 2, (height - size[1]) // 2))
+    return canvas
+
+
 def fit_image(image: Image.Image, preset: Preset) -> FitResult:
     """Приводит кадр к правилам маркетплейса."""
     verdict = inspect_image(image, preset)
+    if verdict.status == PASSTHROUGH:
+        background = (verdict.background if verdict.background is not None
+                      else estimate_background(np.asarray(image),
+                                               preset.background.border_fraction))
+        canvas = place_on_canvas(image, preset, background, preset.cropped_fit_mode)
+        verdict.metrics.margins = {}
+        return FitResult(PASSTHROUGH, image=canvas, metrics=verdict.metrics,
+                         warnings=verdict.warnings, reason=verdict.reason)
     if not verdict.fittable:
-        return FitResult(
-            verdict.status,
-            image=image if verdict.status == PASSTHROUGH else None,
-            metrics=verdict.metrics, warnings=verdict.warnings, reason=verdict.reason)
+        return FitResult(verdict.status, metrics=verdict.metrics,
+                         warnings=verdict.warnings, reason=verdict.reason)
 
     metrics = verdict.metrics
     warnings = list(verdict.warnings)

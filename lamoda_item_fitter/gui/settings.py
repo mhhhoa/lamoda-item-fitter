@@ -20,9 +20,13 @@ CONFLICT_LABELS = [
     ("Пропустить", SKIP),
 ]
 CROPPED_LABELS = [
-    ("Переносить без подгонки", "passthrough"),
+    ("Приводить к размеру холста", "passthrough"),
     ("Пропускать", "skip"),
     ("Вписывать по видимой части", "fit"),
+]
+FIT_MODE_LABELS = [
+    ("Вписать целиком", "contain"),
+    ("Заполнить с обрезкой", "cover"),
 ]
 SHADOW_LABELS = [
     ("Не включать в габарит", "exclude"),
@@ -62,6 +66,16 @@ class SettingsDialog(QDialog):
             next(i for i, (_, value) in enumerate(CROPPED_LABELS)
                  if value == preset.cropped_policy))
 
+        self.fit_mode = QComboBox()
+        for title, _ in FIT_MODE_LABELS:
+            self.fit_mode.addItem(title)
+        self.fit_mode.setCurrentIndex(
+            next(i for i, (_, value) in enumerate(FIT_MODE_LABELS)
+                 if value == preset.cropped_fit_mode))
+        self.fit_mode.setToolTip(
+            "Вписать целиком — кадр помещается на холст без потерь, поля добираются фоном.\n"
+            "Заполнить с обрезкой — кадр закрывает холст целиком, края уходят за границу.")
+
         self.shadow = QComboBox()
         for title, _ in SHADOW_LABELS:
             self.shadow.addItem(title)
@@ -83,6 +97,7 @@ class SettingsDialog(QDialog):
         form.addRow("", self.folder_suffix)
         form.addRow("Если файл уже есть", self.conflict)
         form.addRow("Макро-кадры", self.cropped)
+        form.addRow("Размер макро-кадра", self.fit_mode)
         form.addRow("Тень под товаром", self.shadow)
         form.addRow("Папка результата", output_row)
 
@@ -141,6 +156,7 @@ class SettingsDialog(QDialog):
         return self._preset.replace(
             output=updated,
             cropped_policy=CROPPED_LABELS[self.cropped.currentIndex()][1],
+            cropped_fit_mode=FIT_MODE_LABELS[self.fit_mode.currentIndex()][1],
             shadow_mode=SHADOW_LABELS[self.shadow.currentIndex()][1],
         )
 
