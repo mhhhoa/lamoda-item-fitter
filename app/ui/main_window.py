@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import APP_NAME, APP_TAGLINE
 from ..core.jobs import collect
 from ..core.settings import INPUT_EXTENSIONS, Settings
 from ..pipeline import Pipeline, Summary
@@ -37,7 +38,7 @@ class MainWindow(QWidget):
         super().__init__()
         self.settings = settings
         self.setObjectName("root")
-        self.setWindowTitle("Lamoda Item Fitter — сжатие фото под маркетплейс")
+        self.setWindowTitle(f"{APP_NAME} — сжатие фото под маркетплейс")
         self.setMinimumSize(1200, 660)
         self.resize(1320, 820)
         self.setAcceptDrops(True)
@@ -68,15 +69,15 @@ class MainWindow(QWidget):
         layout.setContentsMargins(20, 0, 20, 0)
         layout.setSpacing(12)
 
-        mark = QLabel("L")
+        mark = QLabel("W")
         mark.setObjectName("logoMark")
         mark.setAlignment(Qt.AlignCenter)
 
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        title = QLabel("Lamoda Item Fitter")
+        title = QLabel(APP_NAME)
         title.setObjectName("appTitle")
-        subtitle = QLabel("Пакетное сжатие фотографий под требования маркетплейса")
+        subtitle = QLabel(APP_TAGLINE)
         subtitle.setObjectName("appSubtitle")
         titles.addWidget(title)
         titles.addWidget(subtitle)

@@ -14,7 +14,7 @@ echo === Собираю ===
 pyinstaller --noconfirm --clean build.spec || goto :error
 
 echo.
-echo Готово: dist\LamodaItemFitter.exe
+echo Готово: dist\WeightFitter.exe
 pause
 exit /b 0
 

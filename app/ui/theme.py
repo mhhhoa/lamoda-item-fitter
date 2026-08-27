@@ -83,6 +83,8 @@ QLabel#sectionTitle {{
     color: {c['text_faint']};
 }}
 QLabel#hint {{ font-size: 11px; color: {c['text_muted']}; }}
+QLabel#creditsTitle {{ font-size: 11px; font-weight: 600; color: {c['text_faint']}; }}
+QLabel#creditsAuthor {{ font-size: 11px; color: {c['text_faint']}; }}
 QLabel#fieldLabel {{ color: {c['text_muted']}; }}
 QFrame#separator {{ background: {c['border']}; max-height: 1px; border: none; }}
 

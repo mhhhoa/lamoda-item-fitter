@@ -137,7 +137,7 @@ class Settings:
         import os
 
         base = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
-        return Path(base) / "LamodaItemFitter" / "settings.json"
+        return Path(base) / "WeightFitter" / "settings.json"
 
     def save(self) -> None:
         path = self.config_path()

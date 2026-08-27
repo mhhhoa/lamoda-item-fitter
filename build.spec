@@ -52,7 +52,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="LamodaItemFitter",
+    name="WeightFitter",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -61,4 +61,6 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     icon="assets/icon.ico",
+    # Название, версия и автор в свойствах файла Windows.
+    version="version_info.txt",
 )

@@ -9,11 +9,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from . import APP_NAME
 from .core.settings import Settings
 from .ui.main_window import MainWindow
 from .ui.theme import stylesheet
-
-APP_NAME = "Lamoda Item Fitter"
 
 
 def _icon_path() -> Path | None:
@@ -38,7 +37,7 @@ def main() -> int:
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     application = QApplication(sys.argv)
     application.setApplicationName(APP_NAME)
-    application.setOrganizationName("LamodaItemFitter")
+    application.setOrganizationName("WeightFitter")
     application.setStyle("Fusion")
     application.setStyleSheet(stylesheet())
 

@@ -61,10 +61,10 @@ jobs:
         shell: pwsh
         run: |
           $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
-          $exe = "dist/LamodaItemFitter.exe"
+          $exe = "dist/WeightFitter.exe"
           if (-not (Test-Path $exe)) { throw "exe не собрался" }
           $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
-          Write-Host "LamodaItemFitter.exe — $mb МБ"
+          Write-Host "WeightFitter.exe — $mb МБ"
 
           # Сборка без консоли отпускает командную строку сразу, поэтому
           # ждём процесс явно и читаем отчёт из файла, а не из вывода.
@@ -83,7 +83,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LamodaItemFitter-windows
-          path: dist/LamodaItemFitter.exe
+          name: WeightFitter-windows
+          path: dist/WeightFitter.exe
           if-no-files-found: error
           retention-days: 90

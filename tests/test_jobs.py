@@ -89,3 +89,64 @@ def test_planner_applies_suffix(tree, tmp_path):
     planner = DestinationPlanner(settings)
     destination = planner.reserve(Job(tree / "cover.png", tree), ".png")
     assert destination.name == "cover_lamoda.png"
+
+
+def _parse_version_info() -> dict[str, str]:
+    """Разбирает version_info.txt так же, как это делает PyInstaller.
+
+    Их загрузчик работает только на Windows, а формат — обычное выражение
+    Python. Подставляем заглушки вместо классов и получаем ту же структуру:
+    опечатка в файле здесь и всплывёт, а не через пять минут в сборке.
+    """
+    from pathlib import Path as FsPath
+
+    class Node:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    names = (
+        "VSVersionInfo", "FixedFileInfo", "StringFileInfo",
+        "StringTable", "StringStruct", "VarFileInfo", "VarStruct",
+    )
+    source = (FsPath(__file__).resolve().parents[1] / "version_info.txt").read_text(
+        encoding="utf-8"
+    )
+    info = eval(compile(source, "version_info.txt", "eval"), {n: Node for n in names})
+
+    fields: dict[str, str] = {}
+    numbers: dict[str, tuple] = {}
+
+    def walk(node):
+        if isinstance(node, Node):
+            if len(node.args) == 2 and all(isinstance(a, str) for a in node.args):
+                fields[node.args[0]] = node.args[1]
+            numbers.update(
+                {k: v for k, v in node.kwargs.items() if k in ("filevers", "prodvers")}
+            )
+            for value in (*node.args, *node.kwargs.values()):
+                walk(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                walk(value)
+
+    walk(info)
+    fields.update({k: v for k, v in numbers.items()})
+    return fields
+
+
+def test_windows_version_info_is_valid_and_matches_the_package():
+    """Свойства exe и app.__init__ должны расходиться только осознанно."""
+    from app import APP_NAME, AUTHOR, AUTHOR_HANDLE, __version__
+
+    fields = _parse_version_info()
+    expected = tuple(int(part) for part in __version__.split(".")) + (0,)
+
+    assert fields["filevers"] == expected
+    assert fields["prodvers"] == expected
+    assert fields["FileVersion"] == f"{__version__}.0"
+    assert fields["ProductVersion"] == f"{__version__}.0"
+    assert fields["ProductName"] == APP_NAME
+    assert fields["OriginalFilename"] == f"{APP_NAME.replace(' ', '')}.exe"
+    assert AUTHOR in fields["CompanyName"] and AUTHOR_HANDLE in fields["CompanyName"]
+    assert AUTHOR in fields["LegalCopyright"]

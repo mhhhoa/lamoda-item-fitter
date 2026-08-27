@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import APP_NAME, AUTHOR, AUTHOR_HANDLE, __version__
 from ..core.settings import (
     CONFLICT_OVERWRITE,
     CONFLICT_SKIP,
@@ -65,6 +66,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self._build_format_card())
         layout.addWidget(self._build_output_card())
         layout.addStretch(1)
+        layout.addWidget(self._build_credits())
 
         self._building = False
         self._sync_enabled()
@@ -347,6 +349,23 @@ class SettingsPanel(QWidget):
         self.suffix_field.textChanged.connect(self._on_change)
         self.copy_small_check.toggled.connect(self._on_change)
         return card
+
+    def _build_credits(self) -> QWidget:
+        """Название с версией и автор — внизу колонки, мелко и по центру."""
+        block = QWidget()
+        layout = QVBoxLayout(block)
+        layout.setContentsMargins(0, 8, 0, 4)
+        layout.setSpacing(2)
+
+        for text, name in (
+            (f"{APP_NAME} {__version__}", "creditsTitle"),
+            (f"Разработка — {AUTHOR} · {AUTHOR_HANDLE}", "creditsAuthor"),
+        ):
+            label = QLabel(text)
+            label.setObjectName(name)
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label)
+        return block
 
     # ------------------------------------------------------------------
     # Поведение
