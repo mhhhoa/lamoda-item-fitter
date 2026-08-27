@@ -193,3 +193,40 @@ def test_skipping_returns_no_destination(tmp_path, photo):
 
     assert result.status is Status.SKIPPED
     assert result.destination is None
+
+
+# ---------------------------------------------------------------------------
+# Защита от известных поломок кодировщика и глубины цвета
+# ---------------------------------------------------------------------------
+
+def test_jpeg_is_written_even_when_the_huffman_buffer_is_too_small(monkeypatch, photo):
+    """С optimize кодировщик собирает кадр в один буфер и падает, если тот мал."""
+    from PIL import ImageFile
+
+    from app.core import compressor
+
+    monkeypatch.setattr(ImageFile, "MAXBLOCK", 1024)
+    monkeypatch.setattr(compressor, "_MAXBLOCK_CEILING", 0)  # запретим и рост буфера
+
+    data = compressor.encode(photo(900, 900), "jpeg", 97, Settings())
+
+    assert open_bytes(data).size == (900, 900)
+
+
+def test_sixteen_bit_image_does_not_turn_into_a_white_sheet():
+    import struct
+
+    side = 128
+    gradient = b"".join(
+        struct.pack("<H", int(index * 65535 / (side * side - 1)))
+        for index in range(side * side)
+    )
+    source = Image.frombytes("I;16", (side, side), gradient)
+
+    from app.core.compressor import prepare_image
+
+    result = prepare_image(source, Settings(), "jpeg").convert("L")
+    values = list(result.get_flattened_data())
+
+    assert min(values) < 10 and max(values) > 245
+    assert sum(value == 255 for value in values) / len(values) < 0.05

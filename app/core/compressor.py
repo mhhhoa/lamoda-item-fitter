@@ -9,11 +9,12 @@ from __future__ import annotations
 import io
 import math
 import shutil
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from PIL import Image, ImageCms, ImageOps
+from PIL import Image, ImageCms, ImageFile, ImageOps
 
 from .settings import (
     LOSSY_FORMATS,
@@ -173,12 +174,30 @@ def prepare_image(image: Image.Image, settings: Settings, target_format: str) ->
     if image.mode == "CMYK":
         image = image.convert("RGB")
     if image.mode.startswith("I") or image.mode == "F":
-        image = image.convert("L")
+        image = _to_eight_bits(image)
     if image.mode == "LA" and not supports_alpha:
         image = image.convert("L")
     if image.mode not in ("RGB", "RGBA", "L", "LA"):
         image = image.convert("RGBA" if supports_alpha else "RGB")
     return image
+
+
+def _to_eight_bits(image: Image.Image) -> Image.Image:
+    """Сводит 16- и 32-битный кадр к восьми битам, не выжигая света.
+
+    Обычный convert("L") обрезает всё выше 255, и снимок ретушёра в 16 битах
+    превращается в белый лист. Делим по номинальному диапазону, а не по пику:
+    нормировка по максимуму меняла бы экспозицию снимка.
+    """
+    source = image.convert("I")
+    try:
+        highest = source.getextrema()[1]
+    except (ValueError, TypeError):
+        highest = 65535
+    if not highest or highest <= 255:
+        return source.convert("L")
+    divisor = 257.0 if highest <= 65535 else highest / 255.0
+    return source.point(lambda value: value / divisor, "L")
 
 
 def fit_within(image: Image.Image, max_side: int | None) -> Image.Image:
@@ -247,9 +266,9 @@ def encode(
     if fmt == "jpeg":
         # У JPEG дешёвого прохода нет: optimize и mozjpeg стоят копейки,
         # зато без них оценка веса разъезжается с итоговым файлом.
-        image.save(
+        _save_jpeg(
+            image,
             buffer,
-            format="JPEG",
             quality=quality,
             optimize=True,
             progressive=settings.progressive,
@@ -286,6 +305,44 @@ def finalize(attempt: "_Attempt", fmt: str, settings: Settings) -> bytes:
     quality = attempt.quality if attempt.quality is not None else settings.quality
     full = encode(attempt.image, fmt, quality, settings)
     return full if len(full) <= len(attempt.data) else attempt.data
+
+
+#: MAXBLOCK — глобальная величина Pillow, поэтому поднимаем её под замком
+#: и только вверх: увеличенный буфер соседним потокам не мешает.
+_MAXBLOCK_LOCK = threading.Lock()
+_MAXBLOCK_CEILING = 128 * 1024 * 1024
+
+
+def _raise_maxblock(needed: int) -> None:
+    with _MAXBLOCK_LOCK:
+        if ImageFile.MAXBLOCK < needed <= _MAXBLOCK_CEILING:
+            ImageFile.MAXBLOCK = needed
+
+
+def _save_jpeg(image: Image.Image, buffer: io.BytesIO, **params) -> None:
+    """Записывает JPEG, обходя нехватку буфера таблиц Хаффмана.
+
+    С optimize кодировщик собирает весь кадр в один буфер, и на детальном
+    снимке штатного размера не хватает — save падает с «broken data stream».
+    Поднимаем буфер, а если и это не помогло, пишем без оптимизации:
+    отдать файл важнее, чем сэкономить проценты веса.
+    """
+    attempts = (
+        params,
+        params,  # тот же вызов, но уже с увеличенным буфером
+        {**params, "optimize": False, "progressive": False},
+    )
+    for index, attempt in enumerate(attempts):
+        try:
+            image.save(buffer, format="JPEG", **attempt)
+            return
+        except OSError:
+            if index == len(attempts) - 1:
+                raise
+            buffer.seek(0)
+            buffer.truncate()
+            if index == 0:
+                _raise_maxblock(image.width * image.height * 4 + 65536)
 
 
 def _mozjpeg_pass(data: bytes, settings: Settings) -> bytes:

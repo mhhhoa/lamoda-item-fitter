@@ -27,6 +27,14 @@ def _icon_path() -> Path | None:
 
 
 def main() -> int:
+    if "--selftest" in sys.argv:
+        from pathlib import Path as _Path
+
+        from .selftest import run
+
+        arguments = [a for a in sys.argv[1:] if a != "--selftest"]
+        return run(_Path(arguments[0]) if arguments else None)
+
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     application = QApplication(sys.argv)
     application.setApplicationName(APP_NAME)

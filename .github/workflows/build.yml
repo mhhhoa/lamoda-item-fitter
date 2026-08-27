@@ -55,13 +55,29 @@ jobs:
       - name: Сборка
         run: pyinstaller --noconfirm --clean build.spec
 
-      - name: Проверка, что exe получился
+      - name: Самопроверка собранного exe
         shell: pwsh
         run: |
+          $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
           $exe = "dist/LamodaItemFitter.exe"
           if (-not (Test-Path $exe)) { throw "exe не собрался" }
           $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
           Write-Host "LamodaItemFitter.exe — $mb МБ"
+
+          # Сборка без консоли отпускает командную строку сразу, поэтому
+          # ждём процесс явно и читаем отчёт из файла, а не из вывода.
+          $report = "$PWD\selftest.txt"
+          $process = Start-Process -FilePath $exe -ArgumentList "--selftest", $report `
+                       -Wait -PassThru -NoNewWindow
+          if (Test-Path $report) { Get-Content $report -Encoding UTF8 | Write-Host }
+          if ($process.ExitCode -ne 0) { throw "самопроверка не прошла (код $($process.ExitCode))" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-report
+          path: selftest.txt
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
         with:
