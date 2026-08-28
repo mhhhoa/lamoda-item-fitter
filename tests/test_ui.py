@@ -167,3 +167,24 @@ def test_exact_size_reaches_the_settings(window):
 
     assert settings.exact_size_enabled
     assert settings.exact_size == (2000, 3000)
+
+
+def test_clicking_a_thumbnail_does_not_retag_the_whole_selection(window, tree):
+    """Массово переключает только попадание по самой галочке, не по картинке."""
+    from PySide6.QtCore import QItemSelectionModel
+
+    window.add_paths([tree])
+    spin()
+    window.model.set_all_checked(True)
+    window.model.set_checked([1], False)
+
+    selection = window.table.selectionModel()
+    for row in range(len(window.model.rows)):
+        selection.select(
+            window.model.index(row, 0),
+            QItemSelectionModel.Select | QItemSelectionModel.Rows,
+        )
+
+    # Клик мимо галочки: модель ничего не переключала — состав не меняется.
+    window._on_cell_clicked(window.model.index(0, 0))
+    assert not window.model.rows[1].checked

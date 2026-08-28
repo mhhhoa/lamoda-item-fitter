@@ -313,7 +313,8 @@ class MainWindow(QWidget):
 
     def _on_cell_clicked(self, index) -> None:
         """Клик по галочке внутри выделения переключает всё выделение сразу."""
-        if index.column() != FileTableModel.COL_THUMB:
+        toggled = self.model.take_last_toggled()
+        if toggled is None or toggled != index.row():
             return
         rows = self._selected_rows()
         if len(rows) > 1 and index.row() in rows:

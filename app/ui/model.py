@@ -132,6 +132,7 @@ class FileTableModel(QAbstractTableModel):
         super().__init__(parent)
         self.rows: list[Row] = []
         self.theme = "dark"
+        self.last_toggled_row: int | None = None
         self._loader = ThumbnailLoader(self)
         self._loader.ready.connect(self._on_thumb)
 
@@ -163,7 +164,15 @@ class FileTableModel(QAbstractTableModel):
         if not index.isValid() or role != Qt.CheckStateRole:
             return False
         self.set_checked([index.row()], Qt.CheckState(value) == Qt.Checked)
+        # Окно потом решит, распространить ли это на всё выделение. Отличать
+        # надо именно попадание по галочке: клик по миниатюре ничего не менял.
+        self.last_toggled_row = index.row()
         return True
+
+    def take_last_toggled(self) -> int | None:
+        """Отдаёт строку, галочку которой только что переключили, ровно раз."""
+        row, self.last_toggled_row = self.last_toggled_row, None
+        return row
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid():
