@@ -24,7 +24,8 @@ def open_bytes(data: bytes) -> Image.Image:
 
 def test_smart_mode_hits_the_target(photo):
     raw = encode_jpeg(photo(1600, 2000))
-    settings = Settings(target_mb=0.4, max_side_enabled=False)
+    # Резкость добавляет деталей и веса — здесь проверяется подбор, не она.
+    settings = Settings(target_mb=0.4, max_side_enabled=False, sharpen="off")
     result = compress_bytes(raw, settings)
     assert result.status is Status.OK
     assert len(result.data) <= settings.target_bytes
@@ -192,7 +193,7 @@ def test_original_is_kept_when_recompression_would_inflate_it(tmp_path, photo):
         output_format="png", target_mb=5.0, max_side_enabled=False,
         copy_when_already_small=False,
     )
-    result = compress_file(source, lambda extension: destination, settings)
+    result = compress_file(source, lambda extension, size: destination, settings)
 
     assert result.output_size <= source.stat().st_size
     assert destination.read_bytes() == source.read_bytes()
@@ -204,7 +205,7 @@ def test_files_already_within_the_limit_are_copied(tmp_path, photo):
     destination = tmp_path / "out" / "small.jpg"
 
     settings = Settings(target_mb=5.0, max_side_enabled=False, copy_when_already_small=True)
-    result = compress_file(source, lambda extension: destination, settings)
+    result = compress_file(source, lambda extension, size: destination, settings)
 
     assert result.status is Status.COPIED
     assert destination.read_bytes() == source.read_bytes()
@@ -214,7 +215,7 @@ def test_skipping_returns_no_destination(tmp_path, photo):
     source = tmp_path / "photo.jpg"
     source.write_bytes(encode_jpeg(photo(400, 400)))
 
-    result = compress_file(source, lambda extension: None, Settings())
+    result = compress_file(source, lambda extension, size: None, Settings())
 
     assert result.status is Status.SKIPPED
     assert result.destination is None
@@ -267,7 +268,7 @@ def test_broken_file_is_never_copied_into_the_output(tmp_path):
         destination = tmp_path / "out" / name
 
         with pytest.raises(Exception):
-            compress_file(source, lambda extension: destination, Settings())
+            compress_file(source, lambda extension, size: destination, Settings())
 
         assert not destination.exists()
 
@@ -278,7 +279,7 @@ def test_mislabelled_file_gets_the_extension_of_its_real_format(tmp_path, photo)
     photo(300, 300).save(source, format="PNG")
     seen = {}
 
-    def destination_for(extension):
+    def destination_for(extension, size):
         seen["extension"] = extension
         return tmp_path / "out" / f"lying{extension}"
 
@@ -294,7 +295,7 @@ def test_normal_extension_is_preserved_on_copy(tmp_path, photo):
     source.write_bytes(encode_jpeg(photo(300, 300), quality=80))
 
     result = compress_file(
-        source, lambda extension: tmp_path / "out" / f"front{extension}",
+        source, lambda extension, size: tmp_path / "out" / f"front{extension}",
         Settings(target_mb=5.0),
     )
 

@@ -14,7 +14,7 @@ echo === Собираю ===
 pyinstaller --noconfirm --clean build.spec || goto :error
 
 echo.
-echo Готово: dist\WeightFitter.exe
+echo Готово: dist\ImgFitter.exe
 pause
 exit /b 0
 

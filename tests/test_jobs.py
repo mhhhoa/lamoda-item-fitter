@@ -84,11 +84,11 @@ def test_planner_can_skip_existing(tree, tmp_path):
 
 def test_planner_applies_suffix(tree, tmp_path):
     settings = Settings(
-        output_dir=str(tmp_path / "out"), keep_structure=False, name_suffix="_lamoda"
+        output_dir=str(tmp_path / "out"), keep_structure=False, name_suffix="_web"
     )
     planner = DestinationPlanner(settings)
     destination = planner.reserve(Job(tree / "cover.png", tree), ".png")
-    assert destination.name == "cover_lamoda.png"
+    assert destination.name == "cover_web.png"
 
 
 def _parse_version_info() -> dict[str, str]:
@@ -140,12 +140,14 @@ def test_windows_version_info_is_valid_and_matches_the_package():
     from app import APP_NAME, AUTHOR, AUTHOR_HANDLE, __version__
 
     fields = _parse_version_info()
-    expected = tuple(int(part) for part in __version__.split(".")) + (0,)
+    parts = [int(part) for part in __version__.split(".")]
+    expected = tuple(parts + [0] * (4 - len(parts)))
+    text = ".".join(str(part) for part in expected)
 
     assert fields["filevers"] == expected
     assert fields["prodvers"] == expected
-    assert fields["FileVersion"] == f"{__version__}.0"
-    assert fields["ProductVersion"] == f"{__version__}.0"
+    assert fields["FileVersion"] == text
+    assert fields["ProductVersion"] == text
     assert fields["ProductName"] == APP_NAME
     assert fields["OriginalFilename"] == f"{APP_NAME.replace(' ', '')}.exe"
     assert AUTHOR in fields["CompanyName"] and AUTHOR_HANDLE in fields["CompanyName"]

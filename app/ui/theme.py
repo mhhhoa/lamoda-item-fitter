@@ -1,9 +1,11 @@
-"""Оформление приложения: палитра и таблица стилей Qt."""
+"""Оформление приложения: палитры и таблица стилей Qt."""
 
 from __future__ import annotations
 
+from ..core.settings import THEME_DARK, THEME_LIGHT
+
 #: Тёмная нейтральная база — на ней глаз честнее оценивает цвета фотографий.
-COLORS = {
+DARK = {
     "bg": "#0F1114",
     "surface": "#161A20",
     "surface_alt": "#1C212A",
@@ -16,12 +18,45 @@ COLORS = {
     "accent": "#6E8BFF",
     "accent_hover": "#8098FF",
     "accent_press": "#5C79EE",
+    "on_accent": "#0D1016",
     "success": "#41C08A",
     "warning": "#E8B341",
     "danger": "#EF6B67",
+    "check": "check.png",
 }
 
+#: Светлая — для тех, кому темнота непривычна. Акцент чуть глубже, чтобы
+#: белый текст на кнопке читался так же уверенно, как тёмный на тёмной теме.
+LIGHT = {
+    "bg": "#F3F5F8",
+    "surface": "#FFFFFF",
+    "surface_alt": "#EEF1F5",
+    "surface_hover": "#E3E8EF",
+    "border": "#E2E6EC",
+    "border_strong": "#C7CED8",
+    "text": "#1B2027",
+    "text_muted": "#5B6470",
+    "text_faint": "#8A93A0",
+    "accent": "#4059DE",
+    "accent_hover": "#3349C6",
+    "accent_press": "#2B3EAC",
+    "on_accent": "#FFFFFF",
+    "success": "#0F8A56",
+    "warning": "#A9720A",
+    "danger": "#C93B37",
+    "check": "check_light.png",
+}
+
+PALETTES = {THEME_DARK: DARK, THEME_LIGHT: LIGHT}
+
+#: Совместимость со старым кодом, который ждал единственную палитру.
+COLORS = DARK
+
 FONT_STACK = '"Segoe UI Variable Display", "Segoe UI", "Inter", "SF Pro Text", system-ui, sans-serif'
+
+
+def palette(theme: str = THEME_DARK) -> dict:
+    return PALETTES.get(theme, DARK)
 
 
 def assets_dir() -> str:
@@ -37,10 +72,10 @@ def assets_dir() -> str:
     return ""
 
 
-def stylesheet() -> str:
-    c = COLORS
+def stylesheet(theme: str = THEME_DARK) -> str:
+    c = palette(theme)
     assets = assets_dir()
-    check = f"image: url({assets}/check.png);" if assets else ""
+    check = f"image: url({assets}/{c['check']});" if assets else ""
     check_off = f"image: url({assets}/check_disabled.png);" if assets else ""
     up = f"image: url({assets}/chevron_up.png);" if assets else ""
     down = f"image: url({assets}/chevron_down.png);" if assets else ""
@@ -52,6 +87,46 @@ def stylesheet() -> str:
 }}
 
 QWidget#root {{ background: {c['bg']}; }}
+QDialog {{ background: {c['bg']}; }}
+
+/* Сетка якорей: девять клеток вместо выпадающего списка */
+QPushButton#anchorCell {{
+    background: {c['bg']};
+    border: 1px solid {c['border_strong']};
+    border-radius: 4px;
+    padding: 0;
+}}
+QPushButton#anchorCell:hover {{ border-color: {c['accent']}; }}
+QPushButton#anchorCell:checked {{ background: {c['accent']}; border-color: {c['accent']}; }}
+
+/* Связка сторон: состояние видно по заливке, а не по глифу */
+QPushButton#linkToggle {{
+    background: {c['bg']};
+    border: 1px solid {c['border_strong']};
+    border-radius: 8px;
+    padding: 0;
+    font-size: 15px;
+    color: {c['text_muted']};
+}}
+QPushButton#linkToggle:hover {{ border-color: {c['accent']}; }}
+QPushButton#linkToggle:checked {{
+    background: {c['accent']}; border-color: {c['accent']}; color: {c['on_accent']};
+}}
+
+/* Ссылка на папку результатов в подвале */
+QPushButton#pathLink {{
+    background: transparent; border: none; padding: 0;
+    color: {c['accent']}; text-align: left;
+}}
+QPushButton#pathLink:hover {{ color: {c['accent_hover']}; text-decoration: underline; }}
+QPushButton#pathLink:disabled {{ color: {c['text_faint']}; }}
+
+/* Переключатель темы в шапке */
+QPushButton#themeToggle {{
+    background: transparent; border: 1px solid {c['border_strong']};
+    border-radius: 8px; padding: 5px 10px; font-size: 14px;
+}}
+QPushButton#themeToggle:hover {{ border-color: {c['accent']}; background: {c['surface_alt']}; }}
 
 /* ---------- Шапка ---------- */
 QWidget#header {{
@@ -62,7 +137,7 @@ QLabel#appTitle {{ font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }}
 QLabel#appSubtitle {{ font-size: 12px; color: {c['text_muted']}; }}
 QLabel#logoMark {{
     background: {c['accent']};
-    color: #0F1114;
+    color: {c['on_accent']};
     font-size: 15px;
     font-weight: 700;
     border-radius: 9px;
@@ -116,7 +191,7 @@ QPushButton:disabled {{ color: {c['text_faint']}; border-color: {c['border']}; b
 QPushButton#primary {{
     background: {c['accent']};
     border: 1px solid {c['accent']};
-    color: #0D1016;
+    color: {c['on_accent']};
     font-weight: 600;
     padding: 9px 26px;
     border-radius: 9px;
@@ -141,7 +216,7 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     border-radius: 8px;
     padding: 6px 10px;
     selection-background-color: {c['accent']};
-    selection-color: #0D1016;
+    selection-color: {c['on_accent']};
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border-color: {c['accent']}; }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ color: {c['text_faint']}; }}
@@ -169,7 +244,7 @@ QComboBox QAbstractItemView {{
     padding: 4px;
     outline: none;
     selection-background-color: {c['accent']};
-    selection-color: #0D1016;
+    selection-color: {c['on_accent']};
 }}
 
 /* ---------- Переключатели ---------- */
@@ -215,6 +290,14 @@ QTableView {{
     selection-color: {c['text']};
 }}
 QTableView::item {{ padding: 6px 10px; border: none; border-bottom: 1px solid {c['border']}; }}
+QTableView::indicator {{
+    width: 16px; height: 16px; margin-left: 6px;
+    border: 1px solid {c['border_strong']}; border-radius: 5px; background: {c['bg']};
+}}
+QTableView::indicator:hover {{ border-color: {c['accent']}; }}
+QTableView::indicator:checked {{
+    background: {c['accent']}; border-color: {c['accent']}; {check}
+}}
 QTableView::item:selected {{ background: {c['surface_hover']}; }}
 QHeaderView::section {{
     background: {c['surface']};

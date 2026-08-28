@@ -37,15 +37,17 @@ def main() -> int:
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     application = QApplication(sys.argv)
     application.setApplicationName(APP_NAME)
-    application.setOrganizationName("WeightFitter")
+    application.setOrganizationName("ImgFitter")
     application.setStyle("Fusion")
-    application.setStyleSheet(stylesheet())
+
+    settings = Settings.load()
+    application.setStyleSheet(stylesheet(settings.theme))
 
     icon = _icon_path()
     if icon is not None:
         application.setWindowIcon(QIcon(str(icon)))
 
-    window = MainWindow(Settings.load())
+    window = MainWindow(settings)
     window.show()
     _close_splash()
     return application.exec()

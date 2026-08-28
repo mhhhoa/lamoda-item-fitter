@@ -14,14 +14,21 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from PIL import Image, ImageCms, ImageFile, ImageOps
+from PIL import Image, ImageCms, ImageFile, ImageFilter, ImageOps
 
 from .settings import (
+    FIT_COVER,
+    FIT_STRETCH,
     LOSSY_FORMATS,
     MODE_LOSSLESS,
     MODE_MANUAL,
     MODE_SMART,
     OUTPUT_FORMATS,
+    PAD_BLACK,
+    PAD_CUSTOM,
+    PAD_EDGE,
+    PAD_TRANSPARENT,
+    SHARPEN_OFF,
     Settings,
 )
 
@@ -238,20 +245,158 @@ def _to_eight_bits(image: Image.Image) -> Image.Image:
     return source.point(lambda value: value / divisor, "L")
 
 
-def fit_within(image: Image.Image, max_side: int | None) -> Image.Image:
+def fit_within(image: Image.Image, max_side: int | None, settings: Settings) -> Image.Image:
     """Ужимает по длинной стороне, если она больше лимита."""
     if not max_side or max(image.size) <= max_side:
         return image
     scale = max_side / max(image.size)
-    return _scaled(image, scale)
+    return _scaled(image, scale, settings)
 
 
-def _scaled(image: Image.Image, scale: float) -> Image.Image:
+#: Насколько подчёркивать детали после уменьшения. Радиус подобран так,
+#: чтобы не рисовать ореолы по контуру товара.
+SHARPEN_PRESETS = {
+    "light": (0.8, 55, 3),
+    "strong": (1.1, 110, 2),
+}
+
+
+def _resized(image: Image.Image, size: tuple[int, int], settings: Settings) -> Image.Image:
+    """Меняет размер и, если кадр уменьшился, возвращает ему резкость.
+
+    Любое уменьшение усредняет соседние пиксели, и фактура ткани заметно
+    мылится. Аккуратный unsharp возвращает её, не рисуя ореолов.
+    """
+    if size == image.size:
+        return image
+    result = image.resize(size, Image.LANCZOS)
+    shrunk = size[0] * size[1] < image.width * image.height
+    preset = SHARPEN_PRESETS.get(settings.sharpen)
+    if shrunk and settings.sharpen != SHARPEN_OFF and preset:
+        radius, percent, threshold = preset
+        result = result.filter(
+            ImageFilter.UnsharpMask(radius=radius, percent=percent, threshold=threshold)
+        )
+    return result
+
+
+def _scaled(image: Image.Image, scale: float, settings: Settings) -> Image.Image:
     if scale >= 1.0:
         return image
     width = max(1, int(round(image.width * scale)))
     height = max(1, int(round(image.height * scale)))
-    return image.resize((width, height), Image.LANCZOS)
+    return _resized(image, (width, height), settings)
+
+
+# ---------------------------------------------------------------------------
+# Точный размер кадра
+# ---------------------------------------------------------------------------
+
+def _anchor_offset(space: int, anchor: str, axis: str) -> int:
+    """Смещение кадра внутри холста.
+
+    `space` отрицателен, когда фотография больше холста, — тогда та же
+    формула даёт координату обрезки, и один код обслуживает оба случая.
+    """
+    if axis == "x":
+        if anchor.endswith("left"):
+            return 0
+        if anchor.endswith("right"):
+            return space
+    else:
+        if anchor.startswith("top"):
+            return 0
+        if anchor.startswith("bottom"):
+            return space
+    return space // 2
+
+
+def _edge_color(image: Image.Image) -> tuple[int, int, int]:
+    """Усреднённый цвет по краям кадра — им заливаются поля."""
+    probe = image.convert("RGB").resize((3, 3), Image.BOX)
+    pixels = [probe.getpixel((x, y)) for x in range(3) for y in range(3) if (x, y) != (1, 1)]
+    count = len(pixels)
+    return tuple(sum(channel[i] for channel in pixels) // count for i in range(3))
+
+
+def _pad_background(image: Image.Image, settings: Settings, supports_alpha: bool):
+    if settings.pad_mode == PAD_TRANSPARENT and supports_alpha:
+        return (0, 0, 0, 0)
+    if settings.pad_mode == PAD_BLACK:
+        base = (0, 0, 0)
+    elif settings.pad_mode == PAD_EDGE:
+        base = _edge_color(image)
+    elif settings.pad_mode == PAD_CUSTOM:
+        text = settings.pad_color.lstrip("#")
+        try:
+            base = tuple(int(text[i:i + 2], 16) for i in (0, 2, 4))
+        except (ValueError, IndexError):
+            base = FLATTEN_BACKGROUND
+    else:
+        base = FLATTEN_BACKGROUND
+    return base + (255,) if supports_alpha else base
+
+
+def apply_exact_size(
+    image: Image.Image, settings: Settings, target_format: str
+) -> tuple[Image.Image, str]:
+    """Приводит кадр ровно к заданным пикселям.
+
+    Вторым значением возвращает пояснение для строки списка: увеличение
+    и подкладку полей пользователь должен видеть, а не обнаруживать потом
+    в готовых файлах.
+    """
+    source_size = image.size
+    target = (settings.exact_width, settings.exact_height)
+
+    if settings.fit_mode == FIT_STRETCH:
+        # Растянуть — значит выдать ровно заданный кадр, на то и режим.
+        note = _grow_note(source_size, target) if _grows(source_size, target) else ""
+        return _resized(image, target, settings), note
+
+    by_width = target[0] / image.width
+    by_height = target[1] / image.height
+    scale = max(by_width, by_height) if settings.fit_mode == FIT_COVER else min(by_width, by_height)
+
+    note = ""
+    if scale > 1.0:
+        if settings.allow_upscale:
+            note = _grow_note(source_size, target)
+        else:
+            # Увеличивать запретили — отдаём заданный кадр, но честно
+            # говорим, что фотография в нём меньше и вокруг поля.
+            scale = 1.0
+            note = f"исходник меньше заданного ({source_size[0]}×{source_size[1]}), добавлены поля"
+
+    fitted = _resized(
+        image,
+        (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+        settings,
+    )
+
+    supports_alpha = target_format in {"png", "webp", "avif"}
+    background = _pad_background(fitted, settings, supports_alpha)
+    mode = "RGBA" if supports_alpha and len(background) == 4 else "RGB"
+    if fitted.mode != mode:
+        fitted = fitted.convert(mode)
+
+    canvas = Image.new(mode, target, background)
+    canvas.paste(
+        fitted,
+        (
+            _anchor_offset(target[0] - fitted.width, settings.crop_anchor, "x"),
+            _anchor_offset(target[1] - fitted.height, settings.crop_anchor, "y"),
+        ),
+    )
+    return canvas, note
+
+
+def _grows(source: tuple[int, int], target: tuple[int, int]) -> bool:
+    return target[0] > source[0] or target[1] > source[1]
+
+
+def _grow_note(source: tuple[int, int], target: tuple[int, int]) -> str:
+    return f"увеличено с {source[0]}×{source[1]}"
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +627,7 @@ def _search_scale(
 
     for _ in range(MAX_DOWNSCALE_STEPS):
         check_cancel()
-        candidate = _scaled(image, scale)
+        candidate = _scaled(image, scale, settings)
         if min(candidate.size) < min_side:
             break
         if lossy:
@@ -523,6 +668,8 @@ def _try_lossless_jpeg(
         return None, "библиотека оптимизации JPEG недоступна"
     if (image.format or "").upper() not in {"JPEG", "MPO"}:
         return None, "исходник не JPEG — перекодирование неизбежно"
+    if settings.exact_size_enabled and image.size != (settings.exact_width, settings.exact_height):
+        return None, "кадр нужно привести к точному размеру"
     if settings.max_side_enabled and max(image.size) > settings.max_side:
         return None, "нужно уменьшить разрешение"
     icc = image.info.get("icc_profile")
@@ -574,8 +721,11 @@ def compress_bytes(
         image = prepare_image(opened, settings, fmt)
 
     original_size = image.size
-    if settings.max_side_enabled:
-        image = fit_within(image, settings.max_side)
+    geometry_note = ""
+    if settings.exact_size_enabled:
+        image, geometry_note = apply_exact_size(image, settings, fmt)
+    elif settings.max_side_enabled:
+        image = fit_within(image, settings.max_side, settings)
     scale = image.width / original_size[0]
 
     if settings.mode == MODE_LOSSLESS:
@@ -599,7 +749,9 @@ def compress_bytes(
         quality = settings.quality if fmt in LOSSY_FORMATS else None
         data = encode(image, fmt, settings.quality, settings)
         status = Status.OK if target is None or len(data) <= target else Status.TOO_BIG
-        return Encoded(data, fmt, status, image.width, image.height, quality, scale)
+        return Encoded(
+            data, fmt, status, image.width, image.height, quality, scale, geometry_note
+        )
 
     # Умный режим: сначала пытаемся сохранить разрешение, играя качеством.
     if fmt in LOSSY_FORMATS:
@@ -608,11 +760,14 @@ def compress_bytes(
             return Encoded(
                 finalize(attempt, fmt, settings), fmt, Status.OK,
                 attempt.image.width, attempt.image.height, attempt.quality, scale,
+                geometry_note,
             )
     else:
         data = encode(image, fmt, settings.quality, settings)
         if len(data) <= target:
-            return Encoded(data, fmt, Status.OK, image.width, image.height, None, scale)
+            return Encoded(
+                data, fmt, Status.OK, image.width, image.height, None, scale, geometry_note
+            )
 
     if not settings.allow_downscale:
         lossy = fmt in LOSSY_FORMATS
@@ -620,15 +775,23 @@ def compress_bytes(
         return Encoded(
             data, fmt, Status.TOO_BIG, image.width, image.height,
             settings.min_quality if lossy else None, scale,
-            note="уменьшение картинки выключено",
+            note=(
+                "точный размер не даёт уменьшать — снизьте нижнюю планку качества"
+                if settings.exact_size_enabled
+                else "уменьшение картинки выключено"
+            ),
         )
 
     best = _search_scale(image, fmt, settings, target, check_cancel)
     data = finalize(best, fmt, settings)
-    status = Status.OK if len(data) <= target else Status.TOO_BIG
+    fits = len(data) <= target
+    note = ""
+    if not fits and settings.min_side_enabled and min(best.image.size) <= settings.min_side:
+        # Не сдались, а упёрлись в заданный минимум — это разные вещи.
+        note = f"уперлись в минимум {settings.min_side} px"
     return Encoded(
-        data, fmt, status,
-        best.image.width, best.image.height, best.quality, scale * best.scale,
+        data, fmt, Status.OK if fits else Status.TOO_BIG,
+        best.image.width, best.image.height, best.quality, scale * best.scale, note,
     )
 
 
@@ -640,8 +803,9 @@ def compress_file(
 ) -> Result:
     """Читает файл, сжимает и кладёт результат туда, куда скажет callback.
 
-    `destination_for(extension)` возвращает итоговый путь (или None, если
-    файл нужно пропустить) — так вся логика конфликтов имён живёт снаружи.
+    `destination_for(extension, size)` возвращает итоговый путь (или None,
+    если файл нужно пропустить) — так вся логика имён и конфликтов живёт
+    снаружи, а шаблону переименования доступен размер результата.
     """
     source_size = source.stat().st_size
     settings = settings.normalized()
@@ -653,13 +817,13 @@ def compress_file(
     # Файл уже подходит, ничего менять не просили — просто копируем.
     copy_extension = _copy_extension(raw, source, source_size, target, settings)
     if copy_extension is not None:
-        destination = destination_for(copy_extension)
+        width, height = _dimensions(raw)
+        destination = destination_for(copy_extension, (width, height))
         if destination is None:
             return Result(Status.SKIPPED, source, None, source_size, source_size,
                           message="Файл с таким именем уже есть")
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
-        width, height = _dimensions(raw)
         return Result(Status.COPIED, source, destination, source_size, source_size,
                       width, height, message="Уже подходит, скопирован без изменений")
 
@@ -667,15 +831,17 @@ def compress_file(
     data, fmt, status = encoded.data, encoded.fmt, encoded.status
     width, height = encoded.width, encoded.height
 
-    destination = destination_for(output_extension(fmt))
+    destination = destination_for(output_extension(fmt), (width, height))
     if destination is None:
         return Result(Status.SKIPPED, source, None, source_size, len(data),
                       message="Файл с таким именем уже есть")
 
     # Пережатие вполне может дать файл тяжелее оригинала: PNG с шумом после
     # ресайза жмётся хуже, WebP lossless из lossy-источника раздувается втрое.
-    # Если формат тот же, отдавать раздутый результат бессмысленно.
-    if len(data) > source_size and fmt == _extension_format(source):
+    # Отдать вместо него исходник можно только если тот равноценен: тот же
+    # формат и те же пиксели. Иначе подмена сорвала бы заданный размер кадра.
+    same_geometry = (width, height) == _dimensions(raw)
+    if len(data) > source_size and fmt == _extension_format(source) and same_geometry:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         fits = target is None or source_size <= target
@@ -729,6 +895,10 @@ def _copy_extension(
         with Image.open(io.BytesIO(raw)) as image:
             actual = (image.format or "").lower()
             if resolve_output_format(settings, actual) != actual:
+                return None
+            if settings.exact_size_enabled and image.size != (
+                settings.exact_width, settings.exact_height
+            ):
                 return None
             if settings.max_side_enabled and max(image.size) > settings.max_side:
                 return None

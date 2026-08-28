@@ -20,7 +20,7 @@ from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 
 from ..core.compressor import Result, Status
 from ..core.jobs import Job
-from .theme import COLORS
+from .theme import palette
 from .widgets import human_size
 
 THUMB_SIZE = 40
@@ -37,14 +37,14 @@ STATUS_LABELS = {
     Status.ERROR: "Ошибка",
 }
 
-STATUS_COLORS = {
-    Status.OK: COLORS["success"],
-    Status.LOSSLESS: COLORS["success"],
-    Status.COPIED: COLORS["text_muted"],
-    Status.NOT_LOSSLESS: COLORS["warning"],
-    Status.TOO_BIG: COLORS["warning"],
-    Status.SKIPPED: COLORS["text_faint"],
-    Status.ERROR: COLORS["danger"],
+STATUS_TONES = {
+    Status.OK: "success",
+    Status.LOSSLESS: "success",
+    Status.COPIED: "text_muted",
+    Status.NOT_LOSSLESS: "warning",
+    Status.TOO_BIG: "warning",
+    Status.SKIPPED: "text_faint",
+    Status.ERROR: "danger",
 }
 
 
@@ -52,6 +52,7 @@ STATUS_COLORS = {
 class Row:
     job: Job
     size: int = 0
+    checked: bool = True
     result: Result | None = None
     icon: QIcon | None = None
     thumb_requested: bool = False
@@ -124,9 +125,13 @@ class ThumbnailLoader(QObject):
 class FileTableModel(QAbstractTableModel):
     COL_THUMB, COL_NAME, COL_FOLDER, COL_BEFORE, COL_AFTER, COL_SAVED, COL_STATUS = range(7)
 
+    #: Список отмеченных изменился — подвалу пора пересчитать сводку.
+    checked_changed = Signal()
+
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.rows: list[Row] = []
+        self.theme = "dark"
         self._loader = ThumbnailLoader(self)
         self._loader.ready.connect(self._on_thumb)
 
@@ -148,11 +153,26 @@ class FileTableModel(QAbstractTableModel):
             return int(Qt.AlignLeft | Qt.AlignVCenter)
         return None
 
+    def flags(self, index: QModelIndex) -> Qt.ItemFlags:  # noqa: N802
+        base = super().flags(index)
+        if index.isValid() and index.column() == self.COL_THUMB:
+            return base | Qt.ItemIsUserCheckable
+        return base
+
+    def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:  # noqa: N802
+        if not index.isValid() or role != Qt.CheckStateRole:
+            return False
+        self.set_checked([index.row()], Qt.CheckState(value) == Qt.Checked)
+        return True
+
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid():
             return None
         row = self.rows[index.row()]
         column = index.column()
+
+        if role == Qt.CheckStateRole and column == self.COL_THUMB:
+            return Qt.Checked if row.checked else Qt.Unchecked
 
         if role == Qt.DecorationRole and column == self.COL_THUMB:
             if row.icon is None and not row.thumb_requested:
@@ -164,14 +184,16 @@ class FileTableModel(QAbstractTableModel):
             return self._text(row, column)
 
         if role == Qt.ForegroundRole:
+            colors = palette(self.theme)
             if column == self.COL_STATUS and row.result is not None:
-                return QColor(STATUS_COLORS[row.result.status])
+                return QColor(colors[STATUS_TONES[row.result.status]])
             if column in (self.COL_FOLDER, self.COL_BEFORE):
-                return QColor(COLORS["text_muted"])
+                return QColor(colors["text_muted"])
             if column == self.COL_SAVED and row.result is not None:
-                return QColor(
-                    COLORS["success"] if row.result.saved_bytes > 0 else COLORS["text_muted"]
-                )
+                if row.result.saved_bytes > 0:
+                    return QColor(colors["success"])
+                grew = row.result.output_size > row.result.source_size
+                return QColor(colors["warning"] if grew else colors["text_muted"])
             return None
 
         if role == Qt.TextAlignmentRole and column in (
@@ -206,7 +228,10 @@ class FileTableModel(QAbstractTableModel):
                 # Ничего не записали — «−100%» читалось бы как рекордное сжатие.
                 return "—"
             percent = 100 * (1 - row.result.ratio)
-            return f"−{percent:.0f}%" if percent >= 0.5 else "0%"
+            if percent >= 0.5:
+                return f"−{percent:.0f}%"
+            # Файл вырос — так и скажем: «0%» выглядело бы как ничья.
+            return f"+{-percent:.0f}%" if percent <= -0.5 else "0%"
         if column == self.COL_STATUS:
             if row.result is None:
                 return ""
@@ -252,6 +277,7 @@ class FileTableModel(QAbstractTableModel):
                 size = 0
             self.rows.append(Row(job=job, size=size))
         self.endInsertRows()
+        self.checked_changed.emit()
         return len(fresh)
 
     def remove_rows(self, indexes: list[int]) -> None:
@@ -260,12 +286,17 @@ class FileTableModel(QAbstractTableModel):
                 self.beginRemoveRows(QModelIndex(), position, position)
                 self.rows.pop(position)
                 self.endRemoveRows()
+        self.checked_changed.emit()
 
     def clear(self) -> None:
         self.beginResetModel()
         self.rows.clear()
         self._loader.clear()
         self.endResetModel()
+
+    def refresh_all(self) -> None:
+        """Перерисовать всё — например, после смены темы."""
+        self._emit_changed(0, len(self.rows) - 1)
 
     def reset_results(self) -> None:
         for row in self.rows:
@@ -293,9 +324,41 @@ class FileTableModel(QAbstractTableModel):
             self.rows[position].icon = QIcon(pixmap)
         self._emit_changed(position, position)
 
+    # --- галочки ----------------------------------------------------------
+    def set_checked(self, positions, checked: bool) -> None:
+        touched = [p for p in positions if 0 <= p < len(self.rows)]
+        if not touched:
+            return
+        for position in touched:
+            self.rows[position].checked = checked
+        self._emit_changed(min(touched), max(touched))
+        self.checked_changed.emit()
+
+    def set_all_checked(self, checked: bool) -> None:
+        self.set_checked(range(len(self.rows)), checked)
+
+    def toggle_checked(self, positions) -> None:
+        """Переключает галочки: если отмечено не всё — отмечаем всё."""
+        touched = [p for p in positions if 0 <= p < len(self.rows)]
+        if not touched:
+            return
+        target = not all(self.rows[p].checked for p in touched)
+        self.set_checked(touched, target)
+
+    def checked_count(self) -> int:
+        return sum(1 for row in self.rows if row.checked)
+
+    def checked_size(self) -> int:
+        return sum(row.size for row in self.rows if row.checked)
+
     # --- сводка -----------------------------------------------------------
     def total_size(self) -> int:
         return sum(row.size for row in self.rows)
 
-    def jobs(self) -> list[Job]:
-        return [row.job for row in self.rows]
+    def checked_jobs(self) -> list[tuple[int, Job]]:
+        """Отмеченные задачи вместе с номерами их строк в списке."""
+        return [
+            (position, row.job)
+            for position, row in enumerate(self.rows)
+            if row.checked
+        ]

@@ -47,6 +47,7 @@ class _Task(QRunnable):
     def __init__(
         self,
         index: int,
+        position: int,
         job: Job,
         planner: DestinationPlanner,
         settings: Settings,
@@ -55,6 +56,9 @@ class _Task(QRunnable):
     ):
         super().__init__()
         self.index = index
+        # Порядок внутри прогона, а не строка в списке: нумерация в шаблоне
+        # имени должна идти подряд, даже если часть файлов не отмечена.
+        self.position = position
         self.job = job
         self.planner = planner
         self.settings = settings
@@ -70,7 +74,9 @@ class _Task(QRunnable):
             check_cancel()
             result = compress_file(
                 self.job.source,
-                lambda extension: self.planner.reserve(self.job, extension),
+                lambda extension, size: self.planner.reserve(
+                    self.job, extension, size, self.position
+                ),
                 self.settings,
                 check_cancel,
             )
@@ -125,7 +131,8 @@ class Pipeline(QObject):
     def running(self) -> bool:
         return self._running
 
-    def start(self, jobs: list[Job], settings: Settings) -> None:
+    def start(self, jobs: list[tuple[int, Job]], settings: Settings) -> None:
+        """Запускает очередь. `jobs` — пары (строка в списке, задача)."""
         if self._running or not jobs:
             return
         self._cancel.clear()
@@ -133,8 +140,10 @@ class Pipeline(QObject):
         self._running = True
         self._pool.setMaxThreadCount(settings.effective_threads)
         planner = DestinationPlanner(settings)
-        for index, job in enumerate(jobs):
-            self._pool.start(_Task(index, job, planner, settings, self._cancel, self._signals))
+        for position, (index, job) in enumerate(jobs):
+            self._pool.start(
+                _Task(index, position, job, planner, settings, self._cancel, self._signals)
+            )
         self.progress.emit(0, len(jobs))
 
     def cancel(self) -> None:

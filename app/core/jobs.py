@@ -91,13 +91,19 @@ class DestinationPlanner:
         self._taken: set[str] = set()
         self._lock = threading.Lock()
 
-    def reserve(self, job: Job, extension: str) -> Path | None:
+    def reserve(
+        self,
+        job: Job,
+        extension: str,
+        size: tuple[int, int] = (0, 0),
+        number: int = 0,
+    ) -> Path | None:
         """Возвращает свободный путь под результат либо None, если пропускаем."""
         base_dir = Path(self._settings.output_dir)
         if self._settings.keep_structure:
             base_dir = base_dir / job.relative.parent
 
-        stem = job.source.stem + self._settings.name_suffix
+        stem = self._stem(job, extension, size, number) + self._settings.name_suffix
         with self._lock:
             candidate = base_dir / f"{stem}{extension}"
             if self._is_free(candidate, job):
@@ -124,6 +130,30 @@ class DestinationPlanner:
                     return candidate
         return None
 
+    def _stem(self, job: Job, extension: str, size: tuple[int, int], number: int) -> str:
+        """Имя файла без расширения — по шаблону или как у исходника."""
+        if not self._settings.rename_enabled:
+            return job.source.stem
+        pattern = self._settings.rename_pattern.strip()
+        if not pattern:
+            return job.source.stem
+
+        index = self._settings.rename_start + number
+        folder = job.relative.parent.name or job.source.parent.name
+        values = {
+            "name": job.source.stem,
+            "folder": folder,
+            "n": str(index),
+            "n2": f"{index:02d}",
+            "n3": f"{index:03d}",
+            "n4": f"{index:04d}",
+            "w": str(size[0]),
+            "h": str(size[1]),
+            "ext": extension.lstrip("."),
+        }
+        rendered = pattern.format_map(_Tokens(values))
+        return sanitize_name(rendered) or job.source.stem
+
     # --- внутреннее ------------------------------------------------------
     @staticmethod
     def _key(path: Path) -> str:
@@ -144,3 +174,23 @@ class DestinationPlanner:
             return a.resolve() == b.resolve()
         except OSError:
             return str(a).lower() == str(b).lower()
+
+
+class _Tokens(dict):
+    """Неизвестную подстановку оставляем как есть, а не роняем обработку."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+#: Символы, которые Windows не пускает в имена файлов.
+FORBIDDEN_IN_NAMES = '<>:"/\\|?*'
+
+
+def sanitize_name(name: str) -> str:
+    """Убирает из имени всё, на чём файловая система споткнётся."""
+    cleaned = "".join(
+        "_" if character in FORBIDDEN_IN_NAMES or ord(character) < 32 else character
+        for character in name
+    )
+    return cleaned.strip(" .")[:150]

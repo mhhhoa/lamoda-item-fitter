@@ -99,3 +99,71 @@ def test_settings_survive_a_round_trip(window, tmp_path):
     assert settings.max_side == 1800
     assert settings.keep_metadata is True
     assert settings.keep_structure is False
+
+
+def test_only_checked_files_are_processed(window, tree, tmp_path):
+    """Снятая галочка — это не «не выделено», а «не обрабатывать»."""
+    window.add_paths([tree])
+    spin()
+    assert window.model.checked_count() == len(window.model.rows)
+
+    window.model.set_all_checked(False)
+    window.model.set_checked([0], True)
+    spin()
+
+    jobs = window.model.checked_jobs()
+    assert len(jobs) == 1
+    assert jobs[0][0] == 0
+    assert window.start_button.isEnabled()
+
+    window.model.set_all_checked(False)
+    spin()
+    assert not window.start_button.isEnabled()
+
+
+def test_space_toggles_checks_on_the_whole_selection(window, tree):
+    window.add_paths([tree])
+    spin()
+
+    window.model.set_all_checked(True)
+    window.model.toggle_checked([0, 1])
+    assert window.model.checked_count() == len(window.model.rows) - 2
+
+    window.model.toggle_checked([0, 1])
+    assert window.model.checked_count() == len(window.model.rows)
+
+
+def test_theme_toggle_switches_both_styles_and_setting(window):
+    from app.core.settings import THEME_DARK, THEME_LIGHT
+
+    assert window.settings.theme == THEME_DARK
+    window._toggle_theme()
+    assert window.settings.theme == THEME_LIGHT
+    assert window.model.theme == THEME_LIGHT
+
+    window._toggle_theme()
+    assert window.settings.theme == THEME_DARK
+
+
+def test_footer_shows_the_output_folder_as_a_link(window, tmp_path):
+    window._refresh_summary()
+    assert str(tmp_path) in window.path_link.text()
+
+    window.panel.output_field.setText("")
+    window.settings = window.panel.collect()
+    window._refresh_summary()
+    assert "Выбрать папку" in window.path_link.text()
+
+
+def test_exact_size_reaches_the_settings(window):
+    from app.ui.settings_panel import SIZE_EXACT
+
+    window.panel.size_buttons[SIZE_EXACT].setChecked(True)
+    window.panel.width_spin.setValue(2000)
+    window.panel.ratio_combo.setCurrentIndex(window.panel.ratio_combo.findData("2:3"))
+    spin()
+
+    settings = window.panel.collect()
+
+    assert settings.exact_size_enabled
+    assert settings.exact_size == (2000, 3000)

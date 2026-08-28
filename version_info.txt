@@ -2,8 +2,8 @@
 # Версия здесь должна совпадать с app.__version__ — это проверяет тест.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(2, 0, 0, 0),
+    prodvers=(2, 0, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,14 +16,14 @@ VSVersionInfo(
       StringTable(
         '041904B0',
         [
-          StringStruct('CompanyName', 'Пугачева Мария (@mhhhoa)'),
-          StringStruct('FileDescription', 'Weight Fitter — пакетное сжатие фотографий'),
-          StringStruct('FileVersion', '1.0.0.0'),
-          StringStruct('InternalName', 'WeightFitter'),
-          StringStruct('LegalCopyright', '© 2026 Пугачева Мария (@mhhhoa)'),
-          StringStruct('OriginalFilename', 'WeightFitter.exe'),
-          StringStruct('ProductName', 'Weight Fitter'),
-          StringStruct('ProductVersion', '1.0.0.0'),
+          StringStruct('CompanyName', 'Мария Пугачева (@mhhhoa)'),
+          StringStruct('FileDescription', 'ImgFitter — сжатие и подгонка размеров фотографий'),
+          StringStruct('FileVersion', '2.0.0.0'),
+          StringStruct('InternalName', 'ImgFitter'),
+          StringStruct('LegalCopyright', '© 2026 Мария Пугачева (@mhhhoa)'),
+          StringStruct('OriginalFilename', 'ImgFitter.exe'),
+          StringStruct('ProductName', 'ImgFitter'),
+          StringStruct('ProductVersion', '2.0.0.0'),
         ],
       ),
     ]),

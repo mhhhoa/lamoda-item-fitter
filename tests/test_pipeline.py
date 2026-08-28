@@ -24,7 +24,7 @@ def run(jobs, settings, timeout: float = 180.0):
     results: dict = {}
     pipeline.finished.connect(finished.append)
     pipeline.item_done.connect(lambda index, result: results.__setitem__(index, result))
-    pipeline.start(jobs, settings)
+    pipeline.start(list(enumerate(jobs)), settings)
 
     deadline = time.monotonic() + timeout
     while not finished and time.monotonic() < deadline:

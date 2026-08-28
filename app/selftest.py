@@ -1,6 +1,6 @@
 """Самопроверка собранного приложения.
 
-Запуск: WeightFitter.exe --selftest отчёт.txt
+Запуск: ImgFitter.exe --selftest отчёт.txt
 
 Собранный exe нельзя потрогать руками в CI, а сломаться при упаковке может
 многое: не доехали ресурсы, не подтянулись библиотеки HEIF или mozjpeg, не
@@ -18,7 +18,8 @@ from pathlib import Path
 
 REQUIRED_ASSETS = [
     "icon.png", "icon.ico", "splash.png",
-    "check.png", "check_disabled.png", "chevron_up.png", "chevron_down.png",
+    "check.png", "check_light.png", "check_disabled.png",
+    "chevron_up.png", "chevron_down.png",
 ]
 
 
@@ -158,6 +159,46 @@ def run(report_path: Path | None = None) -> int:
 
     report.check("Подгонка под лимит", compression)
 
+    def exact_size():
+        from .core.compressor import compress_bytes
+        from .core.settings import FIT_CONTAIN, FIT_COVER, Settings
+
+        buffer = io.BytesIO()
+        _sample(1200, 800).save(buffer, format="JPEG", quality=95)
+        raw = buffer.getvalue()
+
+        for mode in (FIT_COVER, FIT_CONTAIN):
+            result = compress_bytes(
+                raw,
+                Settings(
+                    exact_size_enabled=True, exact_width=600, exact_height=900,
+                    fit_mode=mode, target_mb=20.0,
+                ),
+            )
+            if (result.width, result.height) != (600, 900):
+                raise AssertionError(
+                    f"режим {mode} дал {result.width}×{result.height} вместо 600×900"
+                )
+        return "600×900 в обоих режимах"
+
+    report.check("Точный размер кадра", exact_size)
+
+    def profiles():
+        import tempfile
+        from pathlib import Path as FsPath
+
+        from .core.settings import Profiles, Settings
+
+        with tempfile.TemporaryDirectory() as folder:
+            store = Profiles(FsPath(folder) / "profiles.json")
+            store.put("проверка", Settings(exact_width=1080, exact_height=1350))
+            restored = Profiles(FsPath(folder) / "profiles.json").get("проверка")
+            if restored is None or (restored.exact_width, restored.exact_height) != (1080, 1350):
+                raise AssertionError("профиль не пережил запись и чтение")
+        return "сохраняются и читаются"
+
+    report.check("Профили настроек", profiles)
+
     def lossless():
         from .core.compressor import Status, compress_bytes
         from .core.settings import Settings
@@ -217,9 +258,13 @@ def run(report_path: Path | None = None) -> int:
         from .ui.main_window import MainWindow
         from .ui.theme import stylesheet
 
-        css = stylesheet()
-        if "check.png" not in css:
-            raise AssertionError("в стилях не проставились пути к ресурсам")
+        from .core.settings import THEME_DARK, THEME_LIGHT
+
+        for theme in (THEME_DARK, THEME_LIGHT):
+            css = stylesheet(theme)
+            if "check" not in css or "QTableView::indicator" not in css:
+                raise AssertionError(f"тема {theme}: в стилях нет путей к ресурсам")
+        css = stylesheet(THEME_DARK)
 
         application = QApplication.instance() or QApplication([])
         application.setStyle("Fusion")
@@ -229,7 +274,7 @@ def run(report_path: Path | None = None) -> int:
         application.processEvents()
         size = window.size()
         window.close()
-        return f"окно поднялось, {size.width()}×{size.height()}"
+        return f"окно поднялось в обеих темах, {size.width()}×{size.height()}"
 
     report.check("Интерфейс Qt", interface)
 

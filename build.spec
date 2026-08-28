@@ -52,7 +52,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="WeightFitter",
+    name="ImgFitter",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
