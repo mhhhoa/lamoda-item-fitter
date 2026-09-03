@@ -149,3 +149,6 @@ jobs:
           test -f "distributed/LamodaItemFitter/!! КАК ЗАПУСТИТЬ.txt"
           test -f "distributed/LamodaItemFitter/_internal/!! ЗДЕСЬ НИЧЕГО ЗАПУСКАТЬ НЕ НУЖНО.txt"
           test "$(ls -A distributed | wc -l)" -eq 2
+          # В самой папке — только exe, служебная папка и памятка: ничего
+          # лишнего вроде лога от самопроверки на сборочной машине.
+          test "$(ls -A distributed/LamodaItemFitter | wc -l)" -eq 3

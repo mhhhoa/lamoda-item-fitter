@@ -14,6 +14,7 @@ import pytest
 
 from tools.prepare_package import (
     EXE_NAME,
+    RUNTIME_LEFTOVERS,
     INTERNAL_NOTE,
     START_HERE,
     ZIP_README,
@@ -32,6 +33,9 @@ def built(tmp_path):
     (dist / "_internal" / "PySide6").mkdir(parents=True)
     (dist / EXE_NAME).write_bytes(b"MZ")
     (dist / "_internal" / "python312.dll").write_bytes(b"MZ")
+    # То, что оставляет после себя самопроверка собранного exe.
+    for leftover in RUNTIME_LEFTOVERS:
+        (dist / leftover).write_text("след сборочной машины", encoding="utf-8")
     return dist
 
 
@@ -98,3 +102,19 @@ def test_report_survives_windows_console(built, tmp_path, monkeypatch):
     assert code == 0
     console.flush()
     assert "LamodaItemFitter" in console.buffer.getvalue().decode("utf-8")
+
+
+def test_traces_of_the_build_machine_do_not_travel(built, tmp_path):
+    """Лог и настройки от самопроверки не должны доехать до коллег.
+
+    Лог — с чужими сообщениями, а настройки перебили бы значения по
+    умолчанию у каждого, кто распакует папку.
+    """
+    package = prepare(built, tmp_path / "package")
+    folder = package / "LamodaItemFitter"
+
+    for leftover in RUNTIME_LEFTOVERS:
+        assert not (folder / leftover).exists()
+    assert sorted(p.name for p in folder.iterdir()) == sorted(
+        ["_internal", EXE_NAME, START_HERE[1]]
+    )

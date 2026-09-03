@@ -34,6 +34,12 @@ EXE_NAME = "LamodaItemFitter.exe"
 CONTENTS_DIR = "_internal"
 
 # Слева — файл в репозитории, справа — имя, под которым он попадёт в сборку.
+# Собранный exe запускается прямо на сборочной машине — самопроверкой; свои
+# рабочие файлы он пишет рядом с собой, и они норовят уехать коллегам:
+# лог с чужими сообщениями и настройки, которые перебили бы значения
+# по умолчанию у каждого, кто распакует папку.
+RUNTIME_LEFTOVERS = ("LamodaItemFitter.log", "LamodaItemFitter.settings.json")
+
 START_HERE = ("start_here.txt", "!! КАК ЗАПУСТИТЬ.txt")
 INTERNAL_NOTE = ("internal_note.txt", "!! ЗДЕСЬ НИЧЕГО ЗАПУСКАТЬ НЕ НУЖНО.txt")
 ZIP_README = ("zip_readme.txt", "!! КАК ЗАПУСТИТЬ.txt")
@@ -60,6 +66,12 @@ def prepare(dist_dir: Path, package_dir: Path, docs: Path | None = None) -> Path
             f"в {dist_dir} нет {EXE_NAME} — похоже, сборка не прошла или "
             f"путь указан неверно"
         )
+
+    for name in RUNTIME_LEFTOVERS:
+        stray = dist_dir / name
+        if stray.is_file():
+            stray.unlink()
+            print(f"убран след самопроверки: {name}")
 
     _put_note(docs, START_HERE, dist_dir)
 
