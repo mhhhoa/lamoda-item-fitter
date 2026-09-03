@@ -84,15 +84,19 @@ jobs:
         run: |
           $size = (Get-ChildItem dist\LamodaItemFitter -Recurse | Measure-Object Length -Sum).Sum / 1MB
           Write-Host ("LamodaItemFitter — {0:N1} МБ" -f $size)
+      - name: Папка к раздаче
+        # Раскладывает подсказки «что запускать» и оборачивает сборку папкой,
+        # чтобы архив не высыпался в «Загрузки» россыпью файлов.
+        run: python tools/prepare_package.py
       - uses: actions/upload-artifact@v4
         with:
           name: LamodaItemFitter-windows
-          path: dist/LamodaItemFitter/
+          path: package/
           if-no-files-found: error
       - name: Черновик релиза
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
-        run: Compress-Archive -Path dist\LamodaItemFitter\* -DestinationPath LamodaItemFitter-windows.zip
+        run: Compress-Archive -Path package\* -DestinationPath LamodaItemFitter-windows.zip
       - name: Публикация релиза
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -102,10 +106,16 @@ jobs:
           body: |
             Программа для Windows — устанавливать ничего не нужно.
 
-            Скачайте `LamodaItemFitter-windows.zip`, распакуйте и запустите
-            `LamodaItemFitter.exe` внутри папки (все файлы рядом с ним нужны —
-            без них программа не запустится, поэтому саму папку никуда не
-            перемещайте частями, только целиком).
+            Скачайте `LamodaItemFitter-windows.zip` и распакуйте. Внутри будет
+            папка `LamodaItemFitter`, а в ней — файл `LamodaItemFitter.exe`.
+            Его и надо запускать двойным кликом; рядом лежит памятка
+            «!! КАК ЗАПУСТИТЬ.txt».
+
+            Служебную папку `_internal` открывать не нужно — там библиотеки,
+            без которых программа не запустится. Переносить и копировать
+            сборку можно только целиком, вместе с `_internal`; один вынутый
+            `exe` не работает. Чтобы запускать в один клик, сделайте на
+            `LamodaItemFitter.exe` ярлык на рабочем столе.
 
             **Если Windows показала «Система Windows защитила ваш компьютер»** —
             так она встречает любую программу без цифровой подписи. Чтобы окно
