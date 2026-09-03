@@ -77,7 +77,21 @@ def prepare(dist_dir: Path, package_dir: Path, docs: Path | None = None) -> Path
     return package_dir
 
 
+def _speak_utf8() -> None:
+    """Разрешает выводить кириллицу.
+
+    На Windows Python пишет в перенаправленный вывод в кодировке системы
+    (cp1252 на англоязычном раннере), и любая русская строка в print роняет
+    скрипт с UnicodeEncodeError — на этом упала первая сборка v1.2.1.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _speak_utf8()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", type=Path, default=ROOT / "dist" / "LamodaItemFitter")
     parser.add_argument("--package", type=Path, default=ROOT / "package")

@@ -6,11 +6,20 @@
 показывает кракозябры, а подсказка нужна ровно тем, кто читает её Блокнотом.
 """
 
+import io
+import sys
 from pathlib import Path
 
 import pytest
 
-from tools.prepare_package import EXE_NAME, INTERNAL_NOTE, START_HERE, ZIP_README, prepare
+from tools.prepare_package import (
+    EXE_NAME,
+    INTERNAL_NOTE,
+    START_HERE,
+    ZIP_README,
+    main,
+    prepare,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
@@ -73,3 +82,19 @@ def test_build_without_exe_is_reported(tmp_path):
     empty.mkdir(parents=True)
     with pytest.raises(SystemExit, match=EXE_NAME):
         prepare(empty, tmp_path / "package")
+
+
+def test_report_survives_windows_console(built, tmp_path, monkeypatch):
+    """Отчёт печатается по-русски, а Windows пишет вывод в кодировке системы.
+
+    Без явного utf-8 первая же строка отчёта роняет шаг сборки — так и
+    случилось на v1.2.1: exe собрался, а папка к раздаче не доехала.
+    """
+    console = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", console)
+
+    code = main(["--dist", str(built), "--package", str(tmp_path / "package")])
+
+    assert code == 0
+    console.flush()
+    assert "LamodaItemFitter" in console.buffer.getvalue().decode("utf-8")
