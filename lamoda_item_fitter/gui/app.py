@@ -22,6 +22,7 @@ from ..config import Preset, resource_dir
 from ..downloads import downloads_dir, open_folder
 from ..fitter import FITTED, PASSTHROUGH, SKIPPED, UNRECOGNIZED
 from ..imageio import is_supported
+from ..user_settings import UserSettings
 from .preview import PreviewView
 from .settings import SettingsDialog
 from .theme import current_palette, stylesheet
@@ -154,10 +155,14 @@ class DropZone(QFrame):
 class MainWindow(QWidget):
     def __init__(self, preset: Preset) -> None:
         super().__init__()
-        self._preset = preset
+        # сохранённые настройки накладываются на пресет с правилами сразу —
+        # иначе после перезапуска пользователь снова увидит формат/качество
+        # и папку результата по умолчанию, хотя менял их в прошлый раз
+        saved = UserSettings.load()
+        self._preset = saved.apply(preset)
         self._palette = current_palette()
-        self._output_root: Path | None = None
-        self._conflict = COPY
+        self._output_root = Path(saved.output_root) if saved.output_root else None
+        self._conflict = saved.conflict_policy
         self._jobs: list[Job] = []
         self._sources: list[Path] = []
         #: строки списка по пути исходника — обращаться только из главного потока
@@ -409,6 +414,7 @@ class MainWindow(QWidget):
             self._conflict = dialog.result_conflict()
             self._output_root = dialog.result_output()
             self.preview._preset = self._preset
+            UserSettings.from_state(self._preset, self._conflict, self._output_root).save()
             self._rebuild_queue()
 
     # --- запуск --------------------------------------------------------------
@@ -592,6 +598,7 @@ class MainWindow(QWidget):
         outcome: Outcome | None = item.data(0, ROLE_OUTCOME)
         box = QSize(900, 1300)
         before = _load_scaled(job.source, box) if job else None
+        before_caption = f"исходник · {job.source.name}" if job else "исходник"
         after = None
         caption = "исходник — ещё не обработан"
         if outcome is not None and outcome.written and outcome.job.destination.exists():
@@ -602,10 +609,11 @@ class MainWindow(QWidget):
                        if margins else "результат")
         elif outcome is not None:
             caption = outcome.reason or "не обработан"
-        self.before_toggle.setEnabled(after is not None)
-        if after is None:
-            self.before_toggle.setChecked(False)
-        self.preview.set_images(before, after, caption)
+        # переключатель живой всегда, когда есть что показать: сравнить
+        # исходник с результатом — не единственный сценарий, посмотреть на
+        # исходник в полный размер полезно и до обработки
+        self.before_toggle.setEnabled(before is not None)
+        self.preview.set_images(before, after, caption, before_caption)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._worker is not None:

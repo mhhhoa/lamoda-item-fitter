@@ -24,10 +24,24 @@ CROPPED_LABELS = [
     ("Пропускать", "skip"),
     ("Вписывать по видимой части", "fit"),
 ]
+CROPPED_HINTS = {
+    "passthrough": "Товар выходит за край кадра (крупный план детали) — размер меняется на "
+                   "1524×2200, но без полей и центровки: их для такого кадра не посчитать.",
+    "skip": "Такие кадры не трогаются вовсе и не попадают в папку результата — "
+            "решайте по ним отдельно.",
+    "fit": "Программа обрежет кадр по видимой части товара и впишет как обычное фото — "
+          "годится не для всех макро, результат стоит проверить.",
+}
 FIT_MODE_LABELS = [
     ("Вписать целиком", "contain"),
     ("Заполнить с обрезкой", "cover"),
 ]
+FIT_MODE_HINTS = {
+    "contain": "Кадр помещается на холст целиком, ничего не обрезая — свободные поля по "
+              "краям закрашиваются цветом фона исходника.",
+    "cover": "Кадр растягивается так, чтобы закрыть холст целиком без полей — "
+            "то, что не влезло по краям, обрезается.",
+}
 SHADOW_LABELS = [
     ("Не включать в габарит", "exclude"),
     ("Включать в габарит", "include"),
@@ -65,6 +79,10 @@ class SettingsDialog(QDialog):
         self.cropped.setCurrentIndex(
             next(i for i, (_, value) in enumerate(CROPPED_LABELS)
                  if value == preset.cropped_policy))
+        self.cropped_hint = QLabel()
+        self.cropped_hint.setObjectName("fieldHint")
+        self.cropped_hint.setWordWrap(True)
+        self.cropped.currentIndexChanged.connect(self._update_cropped_hint)
 
         self.fit_mode = QComboBox()
         for title, _ in FIT_MODE_LABELS:
@@ -72,9 +90,10 @@ class SettingsDialog(QDialog):
         self.fit_mode.setCurrentIndex(
             next(i for i, (_, value) in enumerate(FIT_MODE_LABELS)
                  if value == preset.cropped_fit_mode))
-        self.fit_mode.setToolTip(
-            "Вписать целиком — кадр помещается на холст без потерь, поля добираются фоном.\n"
-            "Заполнить с обрезкой — кадр закрывает холст целиком, края уходят за границу.")
+        self.fit_mode_hint = QLabel()
+        self.fit_mode_hint.setObjectName("fieldHint")
+        self.fit_mode_hint.setWordWrap(True)
+        self.fit_mode.currentIndexChanged.connect(self._update_fit_mode_hint)
 
         self.shadow = QComboBox()
         for title, _ in SHADOW_LABELS:
@@ -97,7 +116,9 @@ class SettingsDialog(QDialog):
         form.addRow("", self.folder_suffix)
         form.addRow("Если файл уже есть", self.conflict)
         form.addRow("Макро-кадры", self.cropped)
+        form.addRow("", self.cropped_hint)
         form.addRow("Размер макро-кадра", self.fit_mode)
+        form.addRow("", self.fit_mode_hint)
         form.addRow("Тень под товаром", self.shadow)
         form.addRow("Папка результата", output_row)
 
@@ -121,6 +142,9 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
+        self._update_cropped_hint()
+        self._update_fit_mode_hint()
+
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(note)
@@ -138,6 +162,15 @@ class SettingsDialog(QDialog):
         layout.addStretch(1)
         layout.addSpacing(4)
         layout.addWidget(signature_box)
+
+    def _update_cropped_hint(self) -> None:
+        value = CROPPED_LABELS[self.cropped.currentIndex()][1]
+        self.cropped_hint.setText(CROPPED_HINTS[value])
+        self.fit_mode.setEnabled(value == "passthrough")
+
+    def _update_fit_mode_hint(self) -> None:
+        value = FIT_MODE_LABELS[self.fit_mode.currentIndex()][1]
+        self.fit_mode_hint.setText(FIT_MODE_HINTS[value])
 
     def _pick_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Куда сохранять результат")

@@ -42,3 +42,11 @@ def raise_task(job: Job, preset: Preset) -> Outcome:
     if POISON in job.source.name:
         raise RuntimeError("сломанный кадр")
     return process_one(job, preset)
+
+
+def multi_exit_task(job: Job, preset: Preset) -> Outcome:
+    """Валит процесс на КАЖДОМ ядовитом файле — имитация системной проблемы,
+    а не одного плохого кадра."""
+    if POISON in job.source.name:
+        os._exit(1)
+    return process_one(job, preset)

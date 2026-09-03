@@ -60,16 +60,19 @@ jobs:
             Sort-Object FullName | Select-Object -Last 1
           & $signtool.FullName sign /f cert.pfx /p $env:CERT_PASSWORD `
             /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
-            dist\LamodaItemFitter.exe
+            dist\LamodaItemFitter\LamodaItemFitter.exe
           Remove-Item cert.pfx -Force
-          & $signtool.FullName verify /pa dist\LamodaItemFitter.exe
+          & $signtool.FullName verify /pa dist\LamodaItemFitter\LamodaItemFitter.exe
 
       - name: Самопроверка собранного exe
         shell: pwsh
         run: |
           # exe собран без консоли и отпускает командную строку сразу,
-          # поэтому ждём процесс явно и читаем его отчёт
-          $process = Start-Process -FilePath dist\LamodaItemFitter.exe `
+          # поэтому ждём процесс явно и читаем его отчёт. Самопроверка сама
+          # прогоняет пачку через изолированные процессы — так же, как это
+          # делает реальная обработка, и здесь же ловится, если рабочие
+          # процессы почему-то не поднимаются в собранном виде
+          $process = Start-Process -FilePath dist\LamodaItemFitter\LamodaItemFitter.exe `
             -ArgumentList '--selftest', 'selftest.txt' -Wait -PassThru
           if (Test-Path selftest.txt) { Get-Content selftest.txt }
           if ($process.ExitCode -ne 0) {
@@ -79,25 +82,35 @@ jobs:
       - name: Размер сборки
         shell: pwsh
         run: |
-          $size = (Get-Item dist\LamodaItemFitter.exe).Length / 1MB
-          Write-Host ("LamodaItemFitter.exe — {0:N1} МБ" -f $size)
+          $size = (Get-ChildItem dist\LamodaItemFitter -Recurse | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("LamodaItemFitter — {0:N1} МБ" -f $size)
       - uses: actions/upload-artifact@v4
         with:
           name: LamodaItemFitter-windows
-          path: dist/LamodaItemFitter.exe
+          path: dist/LamodaItemFitter/
           if-no-files-found: error
       - name: Черновик релиза
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: Compress-Archive -Path dist\LamodaItemFitter\* -DestinationPath LamodaItemFitter-windows.zip
+      - name: Публикация релиза
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: dist/LamodaItemFitter.exe
+          files: LamodaItemFitter-windows.zip
           body: |
-            Готовый `LamodaItemFitter.exe` для Windows. Устанавливать ничего не нужно.
+            Программа для Windows — устанавливать ничего не нужно.
+
+            Скачайте `LamodaItemFitter-windows.zip`, распакуйте и запустите
+            `LamodaItemFitter.exe` внутри папки (все файлы рядом с ним нужны —
+            без них программа не запустится, поэтому саму папку никуда не
+            перемещайте частями, только целиком).
 
             **Если Windows показала «Система Windows защитила ваш компьютер»** —
             так она встречает любую программу без цифровой подписи. Чтобы окно
             больше не появлялось, снимите блокировку до распаковки:
-            правый клик по скачанному архиву → **Свойства** → внизу галочка
-            **«Разблокировать»** → **ОК**, и только потом распакуйте.
-            Если архив уже распакован, то же самое можно сделать с самим `exe`.
+            правый клик по скачанному `LamodaItemFitter-windows.zip` →
+            **Свойства** → внизу галочка **«Разблокировать»** → **ОК**, и
+            только потом распакуйте. Если уже распаковали — то же самое
+            можно сделать с файлом `LamodaItemFitter.exe` внутри папки.

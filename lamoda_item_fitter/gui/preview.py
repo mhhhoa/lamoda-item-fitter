@@ -26,12 +26,17 @@ class PreviewView(QWidget):
         self._after: QImage | None = None
         self._show_before = False
         self._caption = "Выберите файл в списке, чтобы увидеть результат"
+        self._before_caption = "исходник"
         self.setMinimumWidth(260)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def set_images(self, before: QImage | None, after: QImage | None, caption: str = "") -> None:
+    def set_images(
+        self, before: QImage | None, after: QImage | None,
+        caption: str = "", before_caption: str = "",
+    ) -> None:
         self._before, self._after = before, after
         self._caption = caption
+        self._before_caption = before_caption or "исходник"
         self.update()
 
     def clear(self) -> None:
@@ -85,11 +90,14 @@ class PreviewView(QWidget):
         if showing_result and self._matches_canvas(image):
             self._draw_guides(painter, target)
 
+        # подпись обязана поспевать за переключателем — иначе после клика на
+        # «показать исходник» картинка меняется, а текст снизу продолжает
+        # говорить «результат», и переключение выглядит нерабочим
+        label = (self._caption or "результат") if showing_result else self._before_caption
         painter.setPen(QColor(self._palette.muted))
         painter.drawText(
             QRect(self.rect().x(), target.bottom() + 6, self.rect().width(), 20),
-            Qt.AlignmentFlag.AlignCenter,
-            self._caption or ("исходник" if not showing_result else "результат"),
+            Qt.AlignmentFlag.AlignCenter, label,
         )
 
     def _matches_canvas(self, image: QImage) -> bool:

@@ -88,3 +88,65 @@ def test_falls_back_to_current_process_when_spawning_fails(
     assert len(outcomes) == len(jobs), "запасной путь обязан доделать всю пачку"
     assert summarize(outcomes)[FITTED] == 6
     assert len(list((tmp_path / "out").rglob("*.jpg"))) == 6
+
+
+def test_pool_that_never_starts_is_not_retried_per_file(
+    preset, tmp_path, monkeypatch,
+):
+    """Если пул вообще не поднимается, программа не пробует поднять его
+    заново под каждый файл по отдельности — ровно тот сценарий, что раньше
+    превращал большую пачку в лавину попыток. Дополнительно, для случая,
+    когда пул стартует, но продолжает падать при повторных попытках, в
+    run_isolated есть потолок MAX_POOL_RESTARTS — после него работа тоже
+    доделывается без изоляции, а не пересоздаёт пул на каждый оставшийся
+    файл; отдельным мок-тестом это не покрыто, так как «последний рубеж»
+    (_run_here) выполняет задания напрямую, и настоящий крах процесса оттуда
+    в принципе не поймать из Python — эта часть проверена вручную и
+    трассировкой кода, не автотестом."""
+    import lamoda_item_fitter.runner as runner_mod
+    from lamoda_item_fitter.batch import COPY, apply_policy, plan, process_one
+    from lamoda_item_fitter.runner import MAX_POOL_RESTARTS
+    from concurrent.futures.process import BrokenProcessPool
+
+    folder = tmp_path / "пачка"
+    folder.mkdir()
+    for index in range(3):
+        array = canvas(900, 1400)
+        array[500:700, 200:1100] = 60
+        Image.fromarray(array).save(folder / f"{index}.jpg")
+
+    class AlwaysBrokenPool:
+        """Подмена пула: любое обращение сразу рапортует о поломке."""
+
+        attempts = 0
+
+        def __init__(self, *a, **k):
+            AlwaysBrokenPool.attempts += 1
+            raise BrokenProcessPool("подставной крах пула")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    fallback_calls = []
+    original_run_here = runner_mod._run_here
+
+    def spy_run_here(jobs, preset, task, record, cancel):
+        fallback_calls.append(list(jobs))
+        return original_run_here(jobs, preset, task, record, cancel)
+
+    monkeypatch.setattr(runner_mod, "ProcessPoolExecutor", AlwaysBrokenPool)
+    monkeypatch.setattr(runner_mod, "_run_here", spy_run_here)
+
+    jobs, _ = apply_policy(plan([folder], preset, output_root=tmp_path / "out"), COPY)
+    outcomes = runner_mod.run_isolated(jobs, preset, process_one, workers=3)
+
+    # пул так и не поднялся ни разу, поэтому это ветка «процессы недоступны
+    # вообще» — она срабатывает раньше счётчика restarts, но так же надёжно
+    # ограничивает число попыток одним разом, а не по файлу
+    assert AlwaysBrokenPool.attempts == 1, "пул не должен пересоздаваться бесконечно"
+    assert len(fallback_calls) == 1
+    assert len(outcomes) == len(jobs), "очередь обязана дойти до конца"
+    assert summarize(outcomes)[FITTED] == 3

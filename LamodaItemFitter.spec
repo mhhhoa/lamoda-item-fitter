@@ -1,5 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Сборка одного самодостаточного exe для Windows.
+"""Сборка самодостаточной программы для Windows.
+
+Собирается как папка (onedir), не как один exe (onefile). Обработка идёт
+в отдельных процессах, а каждый такой процесс — это повторный запуск того
+же исполняемого файла; в режиме onefile это означает, что ПЕРЕД каждым
+запуском рабочего процесса заново распаковываются все ~70 МБ во временную
+папку — отсюда и нагрузка на диск/антивирус при пачке файлов, и
+предупреждения Windows о неудалённой временной папке. В onedir файлы уже
+лежат распакованными рядом с exe, и рабочий процесс стартует напрямую.
 
 Из scipy нужен только ndimage — он тянет за собой лишь `_lib` и `special`,
 поэтому крупные подпакеты исключены. Из Qt нужны Core, Gui и Widgets.
@@ -61,16 +69,13 @@ exe = EXE(
     pyz,
     analysis.scripts,
     splash,
-    splash.binaries,
-    analysis.binaries,
-    analysis.datas,
     [],
+    exclude_binaries=True,  # бинарники едут рядом папкой, а не внутрь exe
     name="LamodaItemFitter",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -79,4 +84,14 @@ exe = EXE(
     entitlements_file=None,
     icon=str(ROOT / "assets" / "icon.ico"),
     version=str(ROOT / "assets" / "version_info.txt"),
+)
+
+collection = COLLECT(
+    exe,
+    analysis.binaries,
+    analysis.datas,
+    splash.binaries,
+    strip=False,
+    upx=False,
+    name="LamodaItemFitter",
 )

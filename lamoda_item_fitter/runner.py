@@ -26,6 +26,13 @@ from .config import Preset
 CRASH_REASON = ("обработка этого файла аварийно завершилась — "
                 "он пропущен, остальные обработаны")
 
+#: сколько раз подряд можно пересоздавать упавший пул, прежде чем сдаться и
+#: доделать оставшееся в текущем процессе. Без потолка системная проблема
+#: (например, недоступность быстрого создания процессов) превращала бы
+#: каждый следующий файл в ещё одну попытку поднять пул — и тем медленнее и
+#: тяжелее становилась работа, чем больше файлов оставалось
+MAX_POOL_RESTARTS = 4
+
 
 def _run_here(
     jobs: Sequence[Job],
@@ -81,6 +88,7 @@ def run_isolated(
     pending = list(jobs)
     context = get_context("spawn")
     processes_work = False
+    restarts = 0
     while pending:
         if cancel is not None and cancel.is_set():
             break
@@ -130,6 +138,18 @@ def run_isolated(
                 "рабочие процессы",
                 RuntimeError("не удалось запустить обработку в отдельных процессах, "
                              "продолжаю в основном"))
+            _run_here(pending, preset, task, record, cancel)
+            return outcomes
+        restarts += 1
+        if restarts > MAX_POOL_RESTARTS:
+            # пул падает уже который раз подряд — похоже на системную
+            # проблему со средой, а не на конкретный файл. Дальше пересоздавать
+            # его для каждого оставшегося файла по одному только замедляло бы
+            # дело — доделываем без изоляции, но точно доделываем
+            errors.report(
+                "рабочие процессы",
+                RuntimeError(f"пул падает подряд ({restarts} раз) — доделываю "
+                             f"{len(pending)} файлов в текущем процессе"))
             _run_here(pending, preset, task, record, cancel)
             return outcomes
         if parallel > 1:
