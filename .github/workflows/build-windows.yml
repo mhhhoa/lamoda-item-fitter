@@ -124,3 +124,28 @@ jobs:
             **Свойства** → внизу галочка **«Разблокировать»** → **ОК**, и
             только потом распакуйте. Если уже распаковали — то же самое
             можно сделать с файлом `LamodaItemFitter.exe` внутри папки.
+
+  package:
+    name: Проверка архива
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: LamodaItemFitter-windows
+          path: distributed
+      - name: Что увидит человек, распаковав архив
+        # Сквозная проверка того, что скачивает коллега. Правило, по которому
+        # GitHub кладёт файлы в корень архива, менялось от версии к версии,
+        # и цена ошибки здесь — не красный тест, а человек, который не может
+        # найти, что запускать. Поэтому смотрим на распакованное, а не на
+        # то, что мы положили в папку сборки.
+        run: |
+          set -eu
+          find distributed -maxdepth 2 -mindepth 1 | sort
+          test -f "distributed/!! КАК ЗАПУСТИТЬ.txt"
+          test -f "distributed/LamodaItemFitter/LamodaItemFitter.exe"
+          test -f "distributed/LamodaItemFitter/!! КАК ЗАПУСТИТЬ.txt"
+          test -f "distributed/LamodaItemFitter/_internal/!! ЗДЕСЬ НИЧЕГО ЗАПУСКАТЬ НЕ НУЖНО.txt"
+          test "$(ls -A distributed | wc -l)" -eq 2
