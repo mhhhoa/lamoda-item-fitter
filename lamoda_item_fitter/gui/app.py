@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QThread, QRunnable, QObject, QThreadPool, Signal
+from PySide6.QtCore import (
+    QObject, QRunnable, QSize, Qt, QThread, QThreadPool, QTimer, Signal,
+)
 from PySide6.QtGui import QBrush, QColor, QIcon, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
@@ -648,6 +650,68 @@ def _close_splash() -> None:
         pass
 
 
+def _force_foreground_on_windows(window: QWidget) -> None:
+    """Запасной путь: Windows отдаёт передний план не по всякой просьбе.
+
+    Если к моменту показа окна активна чужая программа — проводник, из
+    которого запускали exe, — Windows отклоняет обычное переключение и
+    вместо этого мигает кнопкой на панели задач. Короткое «поверх всех
+    окон» и сразу обратно поднимает окно в начало порядка, не оставляя
+    его вечно поверх остальных.
+
+    Всё завёрнуто: не та система, недоступный user32, отказ вызова —
+    молча возвращаемся к обычному поведению Qt, программа от этого
+    не страдает.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        handle = int(window.winId())
+        topmost, not_topmost = -1, -2
+        keep_place = 0x0001 | 0x0002 | 0x0010  # не двигать, не менять размер, не активировать
+        user32 = ctypes.windll.user32
+        user32.SetWindowPos(handle, topmost, 0, 0, 0, 0, keep_place)
+        user32.SetWindowPos(handle, not_topmost, 0, 0, 0, 0, keep_place)
+        user32.SetForegroundWindow(handle)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _bring_to_front(window: QWidget) -> None:
+    """Поднимает окно поверх того, откуда программу запустили."""
+    window.setWindowState(
+        (window.windowState() & ~Qt.WindowState.WindowMinimized)
+        | Qt.WindowState.WindowActive
+    )
+    window.raise_()
+    window.activateWindow()
+    _force_foreground_on_windows(window)
+
+
+def show_in_front(window: QWidget) -> None:
+    """Показывает окно так, чтобы оно оказалось перед человеком, а не за папкой.
+
+    Порядок здесь важен. У собранной программы своя заставка, и это отдельное
+    окно: пока она на экране, передний план принадлежит ей. Если гасить её
+    после показа главного окна, Windows отдаёт освободившийся передний план
+    тому, что лежало под заставкой, — обычно проводнику, из которого
+    запускали exe. Программа при этом открыта, но спрятана за папкой, и
+    выглядит это как «не запустилась».
+
+    Поэтому сначала гасим заставку, потом показываем окно и просим передний
+    план — и повторяем просьбу, когда цикл событий уже крутится: к этому
+    моменту порядок окон успевает перестроиться.
+    """
+    _close_splash()
+    window.show()
+    _bring_to_front(window)
+    QTimer.singleShot(0, lambda: _bring_to_front(window))
+
+
 def main(argv: list[str] | None = None) -> int:
     import sys
 
@@ -659,6 +723,5 @@ def main(argv: list[str] | None = None) -> int:
     if icon.is_file():
         application.setWindowIcon(QIcon(str(icon)))
     window = MainWindow(Preset.load())
-    window.show()
-    _close_splash()
+    show_in_front(window)
     return application.exec()

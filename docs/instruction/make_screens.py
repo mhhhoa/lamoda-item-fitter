@@ -86,7 +86,9 @@ settle()
 window.grab().save(str(OUT / "04-ishodnik.png"))
 
 dialog = SettingsDialog(preset, None, COPY)
+dialog.setStyleSheet(window.styleSheet())
 dialog.show(); settle()
+dialog.adjustSize(); settle()
 dialog.grab().save(str(OUT / "05-nastroyki.png"))
 
 box = QMessageBox()

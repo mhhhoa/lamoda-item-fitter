@@ -19,9 +19,12 @@ from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from lamoda_item_fitter.fitter import FITTED  # noqa: E402
+import lamoda_item_fitter.gui.app as app_module  # noqa: E402
 from lamoda_item_fitter.gui.app import (  # noqa: E402
     BEFORE_TOGGLE_TEXT, BEFORE_TOGGLE_WAITING, ROLE_OUTCOME, MainWindow,
+    _bring_to_front, show_in_front,
 )
+from PySide6.QtCore import Qt  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -306,4 +309,35 @@ def test_analysis_reports_verdicts_without_writing_files(qt_app, preset, tmp_pat
         assert item.text(3), "вердикт обязан быть написан в строке"
     assert not (tmp_path / "out").exists(), "анализ не должен ничего писать на диск"
     assert "Анализ готов" in window.status.text()
+    window.close()
+
+
+def test_window_claims_the_foreground(qt_app, preset):
+    """Окно должно оказаться перед человеком, а не за папкой, из которой запустили."""
+    window = MainWindow(preset)
+    window.show()
+    window.setWindowState(Qt.WindowState.WindowMinimized)
+
+    _bring_to_front(window)
+
+    assert not window.isMinimized()
+    assert window.windowState() & Qt.WindowState.WindowActive
+    window.close()
+
+
+def test_splash_goes_out_before_the_window_appears(qt_app, preset, monkeypatch):
+    """Порядок именно такой, и это не вкусовщина.
+
+    Пока заставка на экране, передний план принадлежит ей. Погасить её после
+    показа окна — значит отдать освободившийся передний план тому, что лежало
+    под заставкой: проводнику, из которого запускали программу.
+    """
+    order = []
+    monkeypatch.setattr(app_module, "_close_splash", lambda: order.append("заставка"))
+    window = MainWindow(preset)
+    monkeypatch.setattr(window, "show", lambda: order.append("окно"))
+
+    show_in_front(window)
+
+    assert order == ["заставка", "окно"]
     window.close()
