@@ -22,6 +22,7 @@ SETTINGS_FILENAME = "LamodaItemFitter.settings.json"
 class UserSettings:
     format: str = "jpeg"
     jpeg_quality: int = 100
+    max_bytes: int = 5 * 1024 * 1024
     suffix: str = "_lamodafit"
     suffix_on_folder: bool = False
     conflict_policy: str = "copy"
@@ -59,6 +60,7 @@ class UserSettings:
             **preset.output.__dict__,
             "format": self.format,
             "jpeg_quality": self.jpeg_quality,
+            "max_bytes": self.max_bytes,
             "suffix": self.suffix,
             "suffix_on_folder": self.suffix_on_folder,
         })
@@ -74,6 +76,7 @@ class UserSettings:
         return cls(
             format=preset.output.format,
             jpeg_quality=preset.output.jpeg_quality,
+            max_bytes=preset.output.max_bytes,
             suffix=preset.output.suffix,
             suffix_on_folder=preset.output.suffix_on_folder,
             conflict_policy=conflict_policy,

@@ -32,6 +32,9 @@ APP_NAME = "Lamoda Item Fitter"
 ROLE_JOB = Qt.ItemDataRole.UserRole
 ROLE_OUTCOME = Qt.ItemDataRole.UserRole + 1
 
+BEFORE_TOGGLE_TEXT = "Показать исходник"
+BEFORE_TOGGLE_WAITING = "Показать исходник — после обработки"
+
 STATUS_TEXT = {
     FITTED: "готово",
     PASSTHROUGH: "перенесён как есть",
@@ -226,7 +229,8 @@ class MainWindow(QWidget):
         self.tree.itemChanged.connect(lambda *_: self._refresh_controls())
 
         self.preview = PreviewView(self._preset, self._palette)
-        self.before_toggle = QCheckBox("Показать исходник")
+        self.before_toggle = QCheckBox(BEFORE_TOGGLE_WAITING)
+        self.before_toggle.setEnabled(False)
         self.before_toggle.toggled.connect(self.preview.show_before)
         preview_box = QVBoxLayout()
         preview_box.setContentsMargins(0, 0, 0, 0)
@@ -609,10 +613,16 @@ class MainWindow(QWidget):
                        if margins else "результат")
         elif outcome is not None:
             caption = outcome.reason or "не обработан"
-        # переключатель живой всегда, когда есть что показать: сравнить
-        # исходник с результатом — не единственный сценарий, посмотреть на
-        # исходник в полный размер полезно и до обработки
-        self.before_toggle.setEnabled(before is not None)
+        # Переключать есть что только когда рядом с исходником появился
+        # результат. До обработки в превью и так исходник: нажатие ничего
+        # бы не меняло на экране, и переключатель выглядел бы сломанным —
+        # поэтому он гаснет и прямо на себе объясняет, чего ждёт.
+        has_result = after is not None
+        self.before_toggle.setEnabled(has_result)
+        self.before_toggle.setText(
+            BEFORE_TOGGLE_TEXT if has_result else BEFORE_TOGGLE_WAITING)
+        if not has_result:
+            self.before_toggle.setChecked(False)
         self.preview.set_images(before, after, caption, before_caption)
 
     def closeEvent(self, event) -> None:  # noqa: N802

@@ -19,7 +19,9 @@ from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from lamoda_item_fitter.fitter import FITTED  # noqa: E402
-from lamoda_item_fitter.gui.app import ROLE_OUTCOME, MainWindow  # noqa: E402
+from lamoda_item_fitter.gui.app import (  # noqa: E402
+    BEFORE_TOGGLE_TEXT, BEFORE_TOGGLE_WAITING, ROLE_OUTCOME, MainWindow,
+)
 
 
 @pytest.fixture(scope="module")
@@ -90,6 +92,47 @@ def test_preview_shows_the_result(qt_app, preset, photos, tmp_path):
 
     assert window.preview.has_before
     assert window.before_toggle.isEnabled()
+    window.close()
+
+
+def test_source_toggle_waits_for_a_result(qt_app, preset, photos, tmp_path):
+    """До обработки переключать нечего — и это должно быть видно, а не угадываться.
+
+    В превью и так исходник, поэтому включённый переключатель ничего бы не
+    менял на экране и читался бы как сломанный.
+    """
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([photos])
+    window.tree.setCurrentItem(window.tree.topLevelItem(0))
+    window._update_preview()
+
+    assert not window.before_toggle.isEnabled()
+    assert window.before_toggle.text() == BEFORE_TOGGLE_WAITING
+    window.close()
+
+
+def test_source_toggle_switches_the_picture(qt_app, preset, photos, tmp_path):
+    """После обработки переключатель действительно меняет картинку и подпись."""
+    window = MainWindow(preset)
+    window._output_root = tmp_path / "out"
+    window.add_paths([photos])
+    _pump(window)
+    window.tree.setCurrentItem(window.tree.topLevelItem(0))
+    window._update_preview()
+
+    assert window.before_toggle.isEnabled()
+    assert window.before_toggle.text() == BEFORE_TOGGLE_TEXT
+
+    preview = window.preview
+    assert preview._active() is preview._after
+
+    window.before_toggle.setChecked(True)
+    assert preview._active() is preview._before
+    assert preview._before is not preview._after
+
+    window.before_toggle.setChecked(False)
+    assert preview._active() is preview._after
     window.close()
 
 

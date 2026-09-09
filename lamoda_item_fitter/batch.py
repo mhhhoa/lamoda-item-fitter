@@ -171,8 +171,10 @@ def process_one(job: Job, preset: Preset) -> Outcome:
 
     warnings = list(result.warnings)
     if size > preset.output.max_bytes:
-        warnings.append(f"файл {size / 1048576:.1f} МБ — больше лимита "
-                        f"{preset.output.max_bytes / 1048576:.0f} МБ")
+        # лимит показываем так же, как он выставлен в настройках: округление
+        # до целого превратило бы «2.5 МБ» в «2 МБ» и запутало бы читателя
+        limit = round(preset.output.max_bytes / 1048576, 1)
+        warnings.append(f"файл {size / 1048576:.1f} МБ — больше лимита {limit:g} МБ")
     elif quality and quality < preset.output.jpeg_quality:
         warnings.append(f"качество снижено до {quality}, чтобы уложиться в лимит веса")
 

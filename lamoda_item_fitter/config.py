@@ -86,8 +86,10 @@ class OutputCfg:
     format: str = "jpeg"
     jpeg_quality: int = 100
     jpeg_subsampling: int = 0
+    #: потолок веса готового файла; Ламода принимает до 5 МБ
     max_bytes: int = 5 * 1024 * 1024
-    quality_ladder: tuple[int, ...] = (100, 97, 95, 92, 90, 88, 85)
+    #: ниже этого качества не опускаемся даже ради веса — кадр станет негодным
+    min_jpeg_quality: int = 30
     png_optimize: bool = True
     suffix: str = "_lamodafit"
     suffix_on_folder: bool = False
@@ -168,8 +170,6 @@ class Preset:
                 return raw
             fields = klass.__dataclass_fields__
             kwargs = {k: v for k, v in raw.items() if k in fields}
-            if klass is OutputCfg and "quality_ladder" in kwargs:
-                kwargs["quality_ladder"] = tuple(kwargs["quality_ladder"])
             return klass(**kwargs)
 
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}

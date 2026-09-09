@@ -6,8 +6,9 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QSpinBox,
+    QVBoxLayout, QWidget,
 )
 
 from .. import APP_NAME, __author__, __handle__, __version__
@@ -42,17 +43,39 @@ FIT_MODE_HINTS = {
     "cover": "Кадр растягивается так, чтобы закрыть холст целиком без полей — "
             "то, что не влезло по краям, обрезается.",
 }
+MEGABYTE = 1024 * 1024
+
+WEIGHT_HINT = ("Ламода принимает файлы до 5 МБ. Программа сама подберёт самое высокое "
+               "качество, при котором кадр укладывается в этот вес; лишнего сжатия не будет.")
+QUALITY_HINT = ("Верхняя граница. Опускается ниже она только тогда, когда иначе файл "
+                "не влезает в лимит веса.")
+
 SHADOW_LABELS = [
     ("Не включать в габарит", "exclude"),
     ("Включать в габарит", "include"),
 ]
 
 
+def _hint(text: str = "") -> QLabel:
+    """Подсказка мелким текстом под полем.
+
+    Перенос по словам сам по себе не заставляет QFormLayout выделить строке
+    высоту в две-три строки: подпись отдаёт высоту одной, и хвост фразы
+    обрезается прямо посреди слова. Подсказка, которую не дочитать, хуже её
+    отсутствия, поэтому высоте разрешено расти.
+    """
+    label = QLabel(text)
+    label.setObjectName("fieldHint")
+    label.setWordWrap(True)
+    label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+    return label
+
+
 class SettingsDialog(QDialog):
     def __init__(self, preset: Preset, output_root: Path | None, conflict: str, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Настройки")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(520)
         self._preset = preset
 
         self.format_box = QComboBox()
@@ -62,6 +85,16 @@ class SettingsDialog(QDialog):
         self.quality = QSpinBox()
         self.quality.setRange(60, 100)
         self.quality.setValue(preset.output.jpeg_quality)
+
+        self.quality_hint = _hint(QUALITY_HINT)
+
+        self.max_weight = QDoubleSpinBox()
+        self.max_weight.setRange(0.5, 100.0)
+        self.max_weight.setSingleStep(0.5)
+        self.max_weight.setDecimals(1)
+        self.max_weight.setSuffix(" МБ")
+        self.max_weight.setValue(round(preset.output.max_bytes / MEGABYTE, 1))
+        self.weight_hint = _hint(WEIGHT_HINT)
 
         self.suffix = QLineEdit(preset.output.suffix)
         self.folder_suffix = QCheckBox("Добавлять суффикс и к имени папки")
@@ -79,9 +112,7 @@ class SettingsDialog(QDialog):
         self.cropped.setCurrentIndex(
             next(i for i, (_, value) in enumerate(CROPPED_LABELS)
                  if value == preset.cropped_policy))
-        self.cropped_hint = QLabel()
-        self.cropped_hint.setObjectName("fieldHint")
-        self.cropped_hint.setWordWrap(True)
+        self.cropped_hint = _hint()
         self.cropped.currentIndexChanged.connect(self._update_cropped_hint)
 
         self.fit_mode = QComboBox()
@@ -90,9 +121,7 @@ class SettingsDialog(QDialog):
         self.fit_mode.setCurrentIndex(
             next(i for i, (_, value) in enumerate(FIT_MODE_LABELS)
                  if value == preset.cropped_fit_mode))
-        self.fit_mode_hint = QLabel()
-        self.fit_mode_hint.setObjectName("fieldHint")
-        self.fit_mode_hint.setWordWrap(True)
+        self.fit_mode_hint = _hint()
         self.fit_mode.currentIndexChanged.connect(self._update_fit_mode_hint)
 
         self.shadow = QComboBox()
@@ -112,13 +141,16 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
         form.addRow("Формат", self.format_box)
         form.addRow("Качество JPEG", self.quality)
+        form.addRow(self.quality_hint)
+        form.addRow("Максимальный вес файла", self.max_weight)
+        form.addRow(self.weight_hint)
         form.addRow("Суффикс файлов", self.suffix)
         form.addRow("", self.folder_suffix)
         form.addRow("Если файл уже есть", self.conflict)
         form.addRow("Макро-кадры", self.cropped)
-        form.addRow("", self.cropped_hint)
+        form.addRow(self.cropped_hint)
         form.addRow("Размер макро-кадра", self.fit_mode)
-        form.addRow("", self.fit_mode_hint)
+        form.addRow(self.fit_mode_hint)
         form.addRow("Тень под товаром", self.shadow)
         form.addRow("Папка результата", output_row)
 
@@ -183,6 +215,7 @@ class SettingsDialog(QDialog):
             **output.__dict__,
             "format": "png" if self.format_box.currentIndex() == 1 else "jpeg",
             "jpeg_quality": self.quality.value(),
+            "max_bytes": int(round(self.max_weight.value() * MEGABYTE)),
             "suffix": self.suffix.text().strip() or output.suffix,
             "suffix_on_folder": self.folder_suffix.isChecked(),
         })

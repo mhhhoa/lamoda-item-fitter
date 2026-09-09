@@ -132,25 +132,57 @@ def _encode(image: Image.Image, fmt: str, quality: int, cfg: OutputCfg) -> bytes
     return buffer.getvalue()
 
 
+def _encode_within_limit(image: Image.Image, cfg: OutputCfg) -> tuple[bytes, int]:
+    """Самое высокое качество JPEG, при котором кадр укладывается в лимит веса.
+
+    Сначала пробуем потолок из настроек: обычный предметный кадр в него и
+    проходит, и тогда это единственная кодировка. Если не влез — двоичный
+    поиск по качеству. Он даёт не «первое подошедшее» значение, как это
+    делала лестница фиксированных ступеней, а наибольшее из подходящих:
+    разница между 92 и 97 на глаз невелика, но отдавать заведомо худшее,
+    когда лучшее тоже влезает, незачем.
+
+    Вес JPEG растёт вместе с качеством, поэтому поиск корректен. Мелкие
+    отступления от монотонности возможны, но на выбор соседней ступени
+    они не влияют.
+    """
+    top = max(cfg.min_jpeg_quality, min(100, cfg.jpeg_quality))
+    data = _encode(image, "jpeg", top, cfg)
+    if len(data) <= cfg.max_bytes:
+        return data, top
+
+    fitting: tuple[bytes, int] | None = None
+    lightest = (data, top)
+    low, high = cfg.min_jpeg_quality, top - 1
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = _encode(image, "jpeg", middle, cfg)
+        if len(candidate) < len(lightest[0]):
+            lightest = (candidate, middle)
+        if len(candidate) <= cfg.max_bytes:
+            fitting = (candidate, middle)
+            low = middle + 1
+        else:
+            high = middle - 1
+
+    # не влезло даже минимальное качество: отдаём самый лёгкий вариант,
+    # а вызывающий код предупредит, что лимит не выдержан
+    return fitting or lightest
+
+
 def save_image(image: Image.Image, path: Path | str, cfg: OutputCfg) -> tuple[int, int]:
     """Сохраняет кадр, укладываясь в лимит веса. Возвращает (байты, качество).
 
-    JPEG кодируется в память по лестнице качества и на диск пишется один раз —
-    первым вариантом, который влез в лимит. Если не влез ни один, пишется самый
-    лёгкий, а вызывающий код сообщает об этом пользователю.
+    Кодируется в память, на диск пишется один раз — уже подобранным вариантом.
+    У PNG качества нет, поэтому подгонять вес нечем: такой файл сохраняется
+    как есть, а о превышении лимита сообщает вызывающий код.
     """
     path = Path(path)
     fmt = "png" if cfg.format.lower() == "png" else "jpeg"
     if fmt == "png":
         data, quality = _encode(image, fmt, 0, cfg), 0
     else:
-        ladder = [q for q in cfg.quality_ladder if q <= cfg.jpeg_quality] or [cfg.jpeg_quality]
-        data, quality = b"", ladder[-1]
-        for candidate in ladder:
-            data = _encode(image, fmt, candidate, cfg)
-            quality = candidate
-            if len(data) <= cfg.max_bytes:
-                break
+        data, quality = _encode_within_limit(image, cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")
     tmp.write_bytes(data)

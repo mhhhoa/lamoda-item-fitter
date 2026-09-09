@@ -38,15 +38,7 @@
     "jpeg_quality": 100,
     "jpeg_subsampling": 0,
     "max_bytes": 5242880,
-    "quality_ladder": [
-      100,
-      97,
-      95,
-      92,
-      90,
-      88,
-      85
-    ],
+    "min_jpeg_quality": 30,
     "png_optimize": true,
     "suffix": "_lamodafit",
     "suffix_on_folder": false
