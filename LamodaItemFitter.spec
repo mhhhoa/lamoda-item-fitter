@@ -14,9 +14,18 @@
 Если исключение окажется лишним, это поймает `--selftest` в CI.
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(SPECPATH)
+
+# Номер версии живёт в одном месте — в пакете; имя exe его повторяет, чтобы у
+# коллеги на диске было видно, какая версия у него лежит, без открытия свойств.
+VERSION = re.search(
+    r'__version__ = "([^"]+)"',
+    (ROOT / "lamoda_item_fitter" / "__init__.py").read_text(encoding="utf-8"),
+).group(1)
+EXE_NAME = f"LamodaItemFitter-{VERSION}"
 
 SCIPY_UNUSED = [
     "scipy.optimize", "scipy.stats", "scipy.sparse", "scipy.interpolate",
@@ -71,7 +80,7 @@ exe = EXE(
     splash,
     [],
     exclude_binaries=True,  # бинарники едут рядом папкой, а не внутрь exe
-    name="LamodaItemFitter",
+    name=EXE_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

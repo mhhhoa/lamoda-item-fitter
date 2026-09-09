@@ -58,11 +58,13 @@ jobs:
           [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:CERT_BASE64))
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName | Select-Object -Last 1
+          # имя exe несёт номер версии, поэтому ищем его по маске
+          $exe = (Get-ChildItem dist\LamodaItemFitter\LamodaItemFitter*.exe |
+            Select-Object -First 1).FullName
           & $signtool.FullName sign /f cert.pfx /p $env:CERT_PASSWORD `
-            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
-            dist\LamodaItemFitter\LamodaItemFitter.exe
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exe
           Remove-Item cert.pfx -Force
-          & $signtool.FullName verify /pa dist\LamodaItemFitter\LamodaItemFitter.exe
+          & $signtool.FullName verify /pa $exe
 
       - name: Самопроверка собранного exe
         shell: pwsh
@@ -72,7 +74,9 @@ jobs:
           # прогоняет пачку через изолированные процессы — так же, как это
           # делает реальная обработка, и здесь же ловится, если рабочие
           # процессы почему-то не поднимаются в собранном виде
-          $process = Start-Process -FilePath dist\LamodaItemFitter\LamodaItemFitter.exe `
+          $exe = (Get-ChildItem dist\LamodaItemFitter\LamodaItemFitter*.exe |
+            Select-Object -First 1).FullName
+          $process = Start-Process -FilePath $exe `
             -ArgumentList '--selftest', 'selftest.txt' -Wait -PassThru
           if (Test-Path selftest.txt) { Get-Content selftest.txt }
           if ($process.ExitCode -ne 0) {
@@ -145,10 +149,17 @@ jobs:
           set -eu
           find distributed -maxdepth 2 -mindepth 1 | sort
           test -f "distributed/!! КАК ЗАПУСТИТЬ.txt"
-          test -f "distributed/LamodaItemFitter/LamodaItemFitter.exe"
+          # имя exe несёт номер версии — ls без совпадения вернёт ошибку,
+          # и шаг упадёт, что нам и нужно
+          ls distributed/LamodaItemFitter/LamodaItemFitter-*.exe
           test -f "distributed/LamodaItemFitter/!! КАК ЗАПУСТИТЬ.txt"
+          test -f "distributed/LamodaItemFitter/Создать ярлык на рабочем столе.bat"
+          test -f "distributed/LamodaItemFitter/Инструкция — Lamoda Item Fitter.docx"
           test -f "distributed/LamodaItemFitter/_internal/!! ЗДЕСЬ НИЧЕГО ЗАПУСКАТЬ НЕ НУЖНО.txt"
           test "$(ls -A distributed | wc -l)" -eq 2
-          # В самой папке — только exe, служебная папка и памятка: ничего
-          # лишнего вроде лога от самопроверки на сборочной машине.
-          test "$(ls -A distributed/LamodaItemFitter | wc -l)" -eq 3
+          # В самой папке — exe, служебная папка, памятка, ярлык-запускатель и
+          # инструкция: ничего лишнего вроде лога от самопроверки.
+          test "$(ls -A distributed/LamodaItemFitter | wc -l)" -eq 5
+          # памятка должна звать настоящий exe, а не имя без версии
+          grep -q "$(basename distributed/LamodaItemFitter/LamodaItemFitter-*.exe)" \
+            "distributed/LamodaItemFitter/!! КАК ЗАПУСТИТЬ.txt"

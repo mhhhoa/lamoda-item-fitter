@@ -49,6 +49,8 @@ WEIGHT_HINT = ("Ламода принимает файлы до 5 МБ. Прог
                "качество, при котором кадр укладывается в этот вес; лишнего сжатия не будет.")
 QUALITY_HINT = ("Верхняя граница. Опускается ниже она только тогда, когда иначе файл "
                 "не влезает в лимит веса.")
+SHORTCUT_HINT = ("Чтобы не искать программу в папке, положите ярлык на рабочий стол. "
+                 "Если папку с программой потом перенести, ярлык нужно создать заново.")
 
 SHADOW_LABELS = [
     ("Не включать в габарит", "exclude"),
@@ -130,6 +132,10 @@ class SettingsDialog(QDialog):
         self.shadow.setCurrentIndex(
             next(i for i, (_, value) in enumerate(SHADOW_LABELS) if value == preset.shadow_mode))
 
+        self.shortcut_button = QPushButton("Создать ярлык на рабочем столе")
+        self.shortcut_button.clicked.connect(self._make_shortcut)
+        self.shortcut_hint = _hint(SHORTCUT_HINT)
+
         self.output = QLineEdit(str(output_root) if output_root else "")
         self.output.setPlaceholderText("по умолчанию — папка «Загрузки»")
         browse = QPushButton("Обзор…")
@@ -153,6 +159,8 @@ class SettingsDialog(QDialog):
         form.addRow(self.fit_mode_hint)
         form.addRow("Тень под товаром", self.shadow)
         form.addRow("Папка результата", output_row)
+        form.addRow("Быстрый запуск", self.shortcut_button)
+        form.addRow(self.shortcut_hint)
 
         note = QLabel("Правила холста и отступов заданы пресетом presets/lamoda.json "
                       "и выверены по фото, прошедшим модерацию.")
@@ -203,6 +211,12 @@ class SettingsDialog(QDialog):
     def _update_fit_mode_hint(self) -> None:
         value = FIT_MODE_LABELS[self.fit_mode.currentIndex()][1]
         self.fit_mode_hint.setText(FIT_MODE_HINTS[value])
+
+    def _make_shortcut(self) -> None:
+        # импорт внутри: настройки открываются и в тестах без ярлыков
+        from .shortcut_ui import make_shortcut
+
+        make_shortcut(self)
 
     def _pick_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Куда сохранять результат")

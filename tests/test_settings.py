@@ -82,7 +82,7 @@ def test_hints_are_not_clipped(dialog):
     dialog.adjustSize()
     QApplication.processEvents()
 
-    hints = (dialog.quality_hint, dialog.weight_hint,
+    hints = (dialog.quality_hint, dialog.weight_hint, dialog.shortcut_hint,
              dialog.cropped_hint, dialog.fit_mode_hint)
     for hint in hints:
         assert hint.text()
