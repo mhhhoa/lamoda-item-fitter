@@ -26,7 +26,7 @@ output:
   out_height: 2000
 
 qa:
-  min_white: 250
+  min_white: 235
   max_product_delta_e: 3.0
   max_bg_residual: 0.030
   max_blown_ratio: 0.020

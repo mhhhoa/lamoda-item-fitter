@@ -44,7 +44,7 @@ def run_batch(
     files = find_images(src, recursive)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    matte_fn = matting_fn = matmod.get_backend(settings.matting)
+    matting_fn = matmod.get_backend(settings.matting, settings.matting_post_process)
     root = src if src.is_dir() else src.parent
     results: list[ProcessResult] = []
 

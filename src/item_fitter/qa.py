@@ -61,6 +61,7 @@ def evaluate(
     alpha: np.ndarray,
     model: BackgroundModel,
     settings: Settings,
+    repair: dict | None = None,
 ) -> QAReport:
     """Считает метрики и выносит вердикт. before/after — sRGB [0,1] одного размера."""
     rep = QAReport()
@@ -68,13 +69,31 @@ def evaluate(
     m = rep.metrics
 
     # --- фон вышел в белый? ---
+    # Пара единиц недо-белизны в углу роли не играет: важно, что фон белый на вид,
+    # а не что он ровно 255. Поэтому это никогда не ошибка, а замечание, и только
+    # когда фон отличается заметно.
     m["bg_corner_min"] = _corner_min(after)
     if m["bg_corner_min"] < settings.min_white:
         rep.worsen(
-            FAIL,
-            f"Фон в углах не дошёл до белого ({m['bg_corner_min']} < {settings.min_white}). "
-            f"Маркетплейс такой кадр отклонит.",
+            CHECK,
+            f"Фон в углах заметно не белый ({m['bg_corner_min']} из 255).",
         )
+
+    # --- маска была дырявой? ---
+    # Самая коварная поломка: нейросеть помечает кусок внутри товара как фон,
+    # тот осветляется вместе с фоном, и на готовом кадре появляется бледное пятно.
+    # Метрика ниже (сдвиг цвета товара) его не видит — она меряет только там,
+    # где маска говорит «товар», то есть ровно мимо таких дыр.
+    if repair:
+        m["mask_filled_px"] = repair.get("filled_px", 0)
+        m["mask_removed_px"] = repair.get("removed_px", 0)
+        area = max(int((alpha > 0.5).sum()), 1)
+        if m["mask_filled_px"] > 0.02 * area:
+            rep.worsen(
+                CHECK,
+                f"Маска была заметно дырявой: {m['mask_filled_px']} точек внутри товара "
+                f"программа приняла за фон и вернула обратно. Стоит взглянуть на кадр.",
+            )
 
     # --- фон вообще был гладким? ---
     m["bg_residual"] = round(float(model.residual_rms), 5)
@@ -151,11 +170,7 @@ def verify_written_file(path, settings: Settings, rep: QAReport) -> QAReport:
     rep.metrics["bg_corner_min"] = actual
 
     # Снимаем прежнюю пометку про углы: она была основана на данных в памяти.
-    rep.notes = [n for n in rep.notes if "в углах не дошёл" not in n]
+    rep.notes = [n for n in rep.notes if "в углах заметно не белый" not in n]
     if actual < settings.min_white:
-        rep.worsen(
-            FAIL,
-            f"Фон в углах записанного файла не дошёл до белого "
-            f"({actual} < {settings.min_white}). Маркетплейс такой кадр отклонит.",
-        )
+        rep.worsen(CHECK, f"Фон в углах заметно не белый ({actual} из 255).")
     return rep

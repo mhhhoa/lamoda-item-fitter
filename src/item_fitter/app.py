@@ -123,7 +123,10 @@ def run_batch_ui(
         f"Смотреть глазами нужно только помеченные строки. "
         f"Подробности — в файле `_отчёт.html` внутри архива."
     )
-    return summary, rows, gallery, str(archive), str(report_path)
+    # Пустые заглушки таблицы, галереи и двух файловых полей занимают пол-экрана
+    # ещё до того, как что-либо обработано. Показываем блок результатов только
+    # когда результаты действительно есть.
+    return summary, rows, gallery, str(archive), str(report_path), gr.update(visible=True)
 
 
 # --- вкладка 2: настройка ---------------------------------------------------
@@ -146,6 +149,8 @@ def preview_one(image, preset, matting, wb, reflection, knee_low, degree, target
         f"(меньше 1 — глазом не видно)",
         f"- площадь отражения: `{m.get('reflection_before')}` → `{m.get('reflection_after')}`",
         f"- выбелено товара: `{m.get('blown_ratio')}`",
+        f"- починено точек маски: `{m.get('mask_filled_px', 0)}` "
+        f"(нейросеть приняла их за фон внутри товара)",
         f"- гладкость фона: `{m.get('bg_residual')}`",
         f"- время: `{res.timing['total']:.1f} с`",
     ]
@@ -155,7 +160,7 @@ def preview_one(image, preset, matting, wb, reflection, knee_low, degree, target
     before8 = np.round(np.clip(srgb, 0, 1) * 255).astype(np.uint8)
     after8 = np.round(np.clip(res.image, 0, 1) * 255).astype(np.uint8)
     mask8 = np.round(np.clip(res.alpha, 0, 1) * 255).astype(np.uint8)
-    return (before8, after8), mask8, "\n".join(lines)
+    return (before8, after8), mask8, "\n".join(lines), gr.update(visible=True)
 
 
 def save_preset_ui(name, preset, matting, wb, reflection, knee_low, degree, target_bg):
@@ -174,38 +179,28 @@ def save_preset_ui(name, preset, matting, wb, reflection, knee_low, degree, targ
     return f"Пресет сохранён: `{path}`. Он появится в списке после перезапуска."
 
 
-# --- вкладка 3: сверка с подрядчиком ----------------------------------------
-
-
-def compare_ui(folder, preset, progress=gr.Progress()):
-    from .compare import compare_folder
-
-    if not folder or not folder.strip():
-        raise gr.Error("Укажите путь к папке с парами «артикул_before» / «артикул_after».")
-
-    scores = compare_folder(Path(folder.strip()), load_preset(preset))
-    rows = [
-        [s.name, s.delta_e_mean, s.delta_e_product, s.delta_e_background, s.ssim, s.verdict]
-        for s in sorted(scores, key=lambda x: -x.delta_e_mean)
-    ]
-    mean = float(np.mean([s.delta_e_mean for s in scores]))
-
-    work = _workdir()
-    report_path = work / "сверка.html"
-    repmod.write_compare_report(report_path, scores, preset_name=preset)
-
-    summary = (
-        f"### Среднее расхождение с эталонами: ΔE2000 = {mean:.2f}\n\n"
-        "Меньше 1 — отличие неразличимо глазом. 1–2 — заметно только встык. "
-        "2–3,5 — практически неразличимо в карточке. Больше 5 — видно сразу."
-    )
-    gallery = [
-        (s.ours, f"{s.name} · наш") for s in scores
-    ] + [(s.reference, f"{s.name} · подрядчик") for s in scores]
-    return summary, rows, gallery, str(report_path)
-
-
 # --- сборка интерфейса ------------------------------------------------------
+
+# Ширину Gradio по умолчанию тянет на весь экран, отчего поля и кнопки
+# расползаются на пол-монитора. Зажимаем колонку и даём кнопкам размер по тексту.
+_CSS = """
+.gradio-container { max-width: 940px !important; margin: 0 auto !important; }
+footer { display: none !important; }
+.fitter-hint { font-size: 13px; opacity: 0.72; margin: -6px 0 2px; }
+"""
+
+# В интерфейсе термин «матирование» не показываем: он ничего не говорит тому,
+# кто просто обрабатывает съёмку. Название описывает результат, а не метод.
+_MATTING_CHOICES = [
+    ("Точно — нейросеть (по умолчанию)", "rembg"),
+    ("Максимально точно — медленнее", "rembg-birefnet"),
+    ("Быстро — без нейросети", "simple"),
+]
+
+_PRESET_HINT = (
+    "Пресет — сохранённый набор всех настроек сразу: под какой маркетплейс, "
+    "какого цвета фон, какой размер на выходе. Как пресет в лайтруме."
+)
 
 
 def build() -> gr.Blocks:
@@ -215,29 +210,36 @@ def build() -> gr.Blocks:
 
     blocks_kwargs = {"title": "Замена фона на белый"}
     if _GRADIO_MAJOR < 6:
+        # В 6.0 и theme, и css переехали в launch(); там они и передаются.
         blocks_kwargs["theme"] = gr.themes.Soft()
+        blocks_kwargs["css"] = _CSS
 
     with gr.Blocks(**blocks_kwargs) as demo:
         gr.Markdown(_INTRO)
 
         with gr.Row():
-            preset = gr.Dropdown(presets, value=default, label="Пресет", scale=2)
-            matting = gr.Dropdown(
-                available_backends(), value=base.matting, label="Матирование", scale=2
-            )
-            target_bg = gr.Textbox(base.target_bg, label="Цвет фона", scale=1)
+            preset = gr.Dropdown(presets, value=default, label="Пресет", scale=1)
+        gr.Markdown(_PRESET_HINT, elem_classes="fitter-hint")
 
-        with gr.Accordion("Тонкая настройка", open=False):
+        with gr.Accordion("Ещё настройки", open=False):
+            with gr.Row():
+                matting = gr.Dropdown(
+                    _MATTING_CHOICES,
+                    value=base.matting,
+                    label="Как находить товар в кадре",
+                    info="Быстрый режим не найдёт белый товар на светлом фоне.",
+                )
+                target_bg = gr.Textbox(base.target_bg, label="Цвет фона")
             with gr.Row():
                 wb = gr.Slider(
                     0, 1, base.wb_strength, step=0.05,
                     label="Снятие цветного рефлекса с товара",
-                    info="Насколько убирать подкраску фоном с кожи и ткани.",
+                    info="Убирает подкраску фоном с кожи и ткани. Перекрутить хуже, чем недокрутить.",
                 )
                 reflection = gr.Slider(
                     0, 1, base.reflection_strength, step=0.05,
-                    label="Сила отражения",
-                    info="1 — как в оригинале. 0 — убрать тень совсем.",
+                    label="Сила тени под товаром",
+                    info="1 — как в оригинале. 0 — убрать совсем.",
                 )
             with gr.Row():
                 knee_low = gr.Slider(
@@ -247,88 +249,70 @@ def build() -> gr.Blocks:
                 )
                 degree = gr.Slider(
                     1, 3, base.poly_degree, step=1,
-                    label="Степень модели фона",
-                    info="2 — обычная циклорама. 3 — сложный градиент или виньетка.",
+                    label="Сложность фона",
+                    info="2 — обычная циклорама. 3 — сложный градиент.",
                 )
 
+        controls = [preset, matting, wb, reflection, knee_low, degree, target_bg]
+
         with gr.Tab("Пакет"):
-            gr.Markdown(
-                "Перетащите кадры **или** впишите путь к папке на этом компьютере."
-            )
             files = gr.File(
-                file_count="multiple", label="Кадры", file_types=["image"], height=160
+                file_count="multiple", label="Кадры", file_types=["image"], height=130
             )
             folder = gr.Textbox(
-                label="…либо путь к папке",
-                placeholder=r"C:\Съёмки\неделя_42  (если заполнено — файлы выше игнорируются)",
+                label="…либо путь к папке на этом компьютере",
+                placeholder=r"C:\Съёмки\неделя_42",
+                info="Если заполнено, файлы выше игнорируются.",
             )
-            run_btn = gr.Button("Обработать всё", variant="primary", size="lg")
-            summary = gr.Markdown()
-            table = gr.Dataframe(
-                headers=["файл", "статус", "углы", "ΔE товара", "КБ", "замечания"],
-                label="Результаты",
-                wrap=True,
-            )
-            gallery = gr.Gallery(label="Результат", columns=4, height=340)
             with gr.Row():
-                zip_out = gr.File(label="Архив с готовыми кадрами")
-                report_out = gr.File(label="HTML-отчёт")
+                run_btn = gr.Button("Обработать всё", variant="primary", scale=0, min_width=170)
+            with gr.Group(visible=False) as results_box:
+                summary = gr.Markdown()
+                table = gr.Dataframe(
+                    headers=["файл", "статус", "фон", "сдвиг цвета", "КБ", "замечания"],
+                    label="Результаты",
+                    wrap=True,
+                )
+                gallery = gr.Gallery(label="Результат", columns=4, height=260)
+                with gr.Row():
+                    zip_out = gr.File(label="Архив с готовыми кадрами", height=110)
+                    report_out = gr.File(label="Отчёт", height=110)
 
             run_btn.click(
                 run_batch_ui,
-                [files, folder, preset, matting, wb, reflection, knee_low, degree, target_bg],
-                [summary, table, gallery, zip_out, report_out],
+                [files, folder, *controls],
+                [summary, table, gallery, zip_out, report_out, results_box],
             )
 
-        with gr.Tab("Настройка на одном кадре"):
+        with gr.Tab("Один кадр"):
             gr.Markdown(
-                "Подберите вид на одном кадре, затем сохраните как пресет "
-                "и используйте его на вкладке «Пакет»."
+                "Подберите вид на одном кадре, сохраните как пресет — "
+                "и используйте его на вкладке «Пакет».",
+                elem_classes="fitter-hint",
             )
             with gr.Row():
-                with gr.Column(scale=1):
-                    single = gr.Image(label="Кадр", type="numpy", height=340)
-                    prev_btn = gr.Button("Показать результат", variant="primary")
+                with gr.Column(scale=1, min_width=240):
+                    single = gr.Image(label="Кадр", type="numpy", height=300)
+                    with gr.Row():
+                        prev_btn = gr.Button("Показать результат", variant="primary",
+                                             scale=0, min_width=170)
                     metrics_md = gr.Markdown()
-                with gr.Column(scale=2):
-                    slider = gr.ImageSlider(label="До / после", height=460)
-                    mask_view = gr.Image(label="Маска товара", height=200)
+                with gr.Column(scale=2, min_width=300):
+                    with gr.Group(visible=False) as preview_box:
+                        slider = gr.ImageSlider(label="До / после", height=400)
+                        mask_view = gr.Image(
+                            label="Что программа сочла товаром (белое)", height=170
+                        )
             with gr.Row():
-                preset_name = gr.Textbox(label="Имя нового пресета", placeholder="мой_вариант")
-                save_btn = gr.Button("Сохранить пресет")
+                preset_name = gr.Textbox(label="Имя нового пресета", placeholder="мой_вариант",
+                                         scale=2)
+                save_btn = gr.Button("Сохранить пресет", scale=0, min_width=170)
             save_msg = gr.Markdown()
 
             prev_btn.click(
-                preview_one,
-                [single, preset, matting, wb, reflection, knee_low, degree, target_bg],
-                [slider, mask_view, metrics_md],
+                preview_one, [single, *controls], [slider, mask_view, metrics_md, preview_box]
             )
-            save_btn.click(
-                save_preset_ui,
-                [preset_name, preset, matting, wb, reflection, knee_low, degree, target_bg],
-                [save_msg],
-            )
-
-        with gr.Tab("Сверка с подрядчиком"):
-            gr.Markdown(
-                "Сравнение нашей обработки с эталонами. В папке должны лежать пары "
-                "файлов: `артикул_before.jpg` и `артикул_after.jpg`."
-            )
-            cmp_folder = gr.Textbox(label="Папка с парами", placeholder="./samples")
-            cmp_btn = gr.Button("Сверить", variant="primary")
-            cmp_summary = gr.Markdown()
-            cmp_table = gr.Dataframe(
-                headers=["артикул", "ΔE общий", "ΔE товара", "ΔE фона", "SSIM", "вывод"],
-                label="Расхождение с эталоном",
-                wrap=True,
-            )
-            cmp_gallery = gr.Gallery(label="Наш результат и эталон", columns=4, height=340)
-            cmp_report = gr.File(label="HTML-отчёт по сверке")
-            cmp_btn.click(
-                compare_ui,
-                [cmp_folder, preset],
-                [cmp_summary, cmp_table, cmp_gallery, cmp_report],
-            )
+            save_btn.click(save_preset_ui, [preset_name, *controls], [save_msg])
 
     return demo
 
@@ -420,6 +404,7 @@ def launch(host: str = "127.0.0.1", port: int | None = None, share: bool = False
         "inbrowser": host == "127.0.0.1",
         "show_api": False,
         "theme": gr.themes.Soft() if _GRADIO_MAJOR >= 6 else None,
+        "css": _CSS if _GRADIO_MAJOR >= 6 else None,
         **extra,
     }
     accepted = set(inspect.signature(demo.launch).parameters)

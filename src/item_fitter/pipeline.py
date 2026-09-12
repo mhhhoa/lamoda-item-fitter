@@ -4,12 +4,16 @@
 
   1. грубая маска объекта;
   2. фит модели фона B(x, y) — ей нужна только зона, где маска близка к нулю;
-  3. уточнение маски по уже готовой B — кромка становится пиксельно точной;
-  4. повторный фит B по уточнённой маске;
-  5. нормализация фона делением, сборка объекта поверх, дотяжка белого.
+  3. починка маски по B — островки «фона» внутри товара возвращаются товару;
+  4. повторный фит B по починенной маске;
+  5. уточнение кромки по B — она становится пиксельно точной;
+  6. нормализация фона делением, сборка объекта поверх, дотяжка белого.
 
-Шаги 3-4 — это разрешение курицы и яйца: точная маска нужна для хорошей модели фона,
+Шаги 3-5 — это разрешение курицы и яйца: точная маска нужна для хорошей модели фона,
 а хорошая модель фона нужна для точной маски. Одной итерации достаточно.
+
+Починка (шаг 3) идёт ДО уточнения кромки, а не после: дырка внутри товара искажает
+сам фит модели фона, а по искажённой модели уточнять кромку уже бессмысленно.
 """
 
 from __future__ import annotations
@@ -68,7 +72,7 @@ def process_array(
     t0 = time.perf_counter()
     if alpha is None:
         if matte_fn is None:
-            matte_fn = matmod.get_backend(settings.matting)
+            matte_fn = matmod.get_backend(settings.matting, settings.matting_post_process)
         alpha = matte_fn(original)
     alpha = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
     t["matting"] = time.perf_counter() - t0
@@ -77,8 +81,20 @@ def process_array(
 
     t0 = time.perf_counter()
     model = bgmod.fit_background(lin, alpha, degree=settings.poly_degree)
+    repair_stats: dict = {"filled_px": 0, "removed_px": 0}
+
+    if settings.repair_mask and not model.degenerate:
+        alpha, repair_stats = matmod.repair_mask(lin, alpha, model)
+        if repair_stats["filled_px"] or repair_stats["removed_px"]:
+            model = bgmod.fit_background(lin, alpha, degree=settings.poly_degree)
+
     if settings.refine_alpha and not model.degenerate:
         alpha = matmod.refine_alpha_from_background(lin, alpha, model)
+        if settings.repair_mask:
+            # Уточнение кромки способно само пробить мелкие дыры там, где товар
+            # по цвету близок к фону. Второй проход дешёвый и их закрывает.
+            alpha, again = matmod.repair_mask(lin, alpha, model)
+            repair_stats = {k: repair_stats[k] + again[k] for k in repair_stats}
         model = bgmod.fit_background(lin, alpha, degree=settings.poly_degree)
     t["background"] = time.perf_counter() - t0
 
@@ -99,7 +115,7 @@ def process_array(
     t["compose"] = time.perf_counter() - t0
 
     # QA считается ДО смены геометрии, чтобы before и after были попиксельно сравнимы.
-    report = qamod.evaluate(original, out, alpha, model, settings)
+    report = qamod.evaluate(original, out, alpha, model, settings, repair=repair_stats)
 
     if settings.geometry_mode != "keep":
         out = finmod.fit_geometry(

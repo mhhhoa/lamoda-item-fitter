@@ -78,11 +78,13 @@ def _thumb(arr: np.ndarray, width: int = 200) -> str:
 
 def _metrics_rows(metrics: dict) -> str:
     pretty = {
-        "bg_corner_min": "Фон в углах (мин. канал, 0–255)",
+        "bg_corner_min": "Фон в углах (справочно, 0–255)",
         "product_delta_e": "Сдвиг цвета товара, ΔE2000",
         "product_delta_e_p95": "Сдвиг цвета, 95-й перцентиль",
         "bg_residual": "Разброс фона вокруг модели",
         "blown_ratio": "Доля товара, выбеленного до фона",
+        "mask_filled_px": "Починено точек маски внутри товара",
+        "mask_removed_px": "Убрано ложных точек товара из фона",
         "reflection_before": "Площадь отражения до",
         "reflection_after": "Площадь отражения после",
         "alpha_area": "Доля кадра, занятая товаром",

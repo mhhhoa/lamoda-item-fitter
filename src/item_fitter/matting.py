@@ -82,7 +82,7 @@ def _simple_matte(srgb: np.ndarray, border: int = 24, sensitivity: float = 0.055
 _REMBG_SESSIONS: dict[str, object] = {}
 
 
-def _rembg_matte_factory(model_name: str) -> Callable[[np.ndarray], np.ndarray]:
+def _rembg_matte_factory(model_name: str, post_process: bool = False) -> Callable[[np.ndarray], np.ndarray]:
     def run(srgb: np.ndarray) -> np.ndarray:
         from PIL import Image
         from rembg import new_session, remove
@@ -95,17 +95,22 @@ def _rembg_matte_factory(model_name: str) -> Callable[[np.ndarray], np.ndarray]:
             _REMBG_SESSIONS[model_name] = new_session(model_name, providers=providers)
 
         img = Image.fromarray(np.round(np.clip(srgb, 0, 1) * 255).astype(np.uint8), "RGB")
-        mask = remove(img, session=_REMBG_SESSIONS[model_name], only_mask=True, post_process_mask=True)
+        mask = remove(
+            img,
+            session=_REMBG_SESSIONS[model_name],
+            only_mask=True,
+            post_process_mask=post_process,
+        )
         return (np.asarray(mask, dtype=np.float32) / 255.0).astype(np.float32)
 
     return run
 
 
-_BACKENDS: dict[str, Callable[[], MattingBackend]] = {
-    "simple": lambda: _simple_matte,
-    "rembg": lambda: _rembg_matte_factory("isnet-general-use"),
-    "rembg-birefnet": lambda: _rembg_matte_factory("birefnet-general"),
-    "rembg-u2net": lambda: _rembg_matte_factory("u2net"),
+_BACKENDS: dict[str, Callable[..., MattingBackend]] = {
+    "simple": lambda **_: _simple_matte,
+    "rembg": lambda **kw: _rembg_matte_factory("isnet-general-use", **kw),
+    "rembg-birefnet": lambda **kw: _rembg_matte_factory("birefnet-general", **kw),
+    "rembg-u2net": lambda **kw: _rembg_matte_factory("u2net", **kw),
 }
 
 
@@ -113,7 +118,7 @@ def available_backends() -> list[str]:
     return list(_BACKENDS)
 
 
-def get_backend(name: str) -> MattingBackend:
+def get_backend(name: str, post_process: bool = False) -> MattingBackend:
     """Возвращает функцию матирования по имени. Падает с понятным текстом, если нет зависимостей."""
     if name not in _BACKENDS:
         raise ValueError(f"Неизвестный бэкенд матирования {name!r}. Доступны: {', '.join(_BACKENDS)}")
@@ -125,6 +130,7 @@ def get_backend(name: str) -> MattingBackend:
                 "Бэкенд 'rembg' требует установки: pip install 'rembg[cpu]'.\n"
                 "Либо используйте --matting simple — он не требует нейросетей."
             ) from exc
+        return _BACKENDS[name](post_process=post_process)
     return _BACKENDS[name]()
 
 
@@ -176,3 +182,81 @@ def refine_alpha_from_background(
     refined = alpha.copy()
     refined[reliable] = np.clip(numer[reliable] / denom[reliable], 0.0, 1.0)
     return refined.astype(np.float32)
+
+
+# --- починка маски -----------------------------------------------------------
+
+
+def repair_mask(
+    img_lin: np.ndarray,
+    alpha: np.ndarray,
+    model: BackgroundModel,
+    solid_threshold: float = 0.5,
+    tolerance_factor: float = 4.0,
+    min_tolerance: float = 0.02,
+    speck_fraction: float = 0.003,
+) -> tuple[np.ndarray, dict]:
+    """Убирает из маски ошибки, которые дают на выходе светлые пятна.
+
+    Нейросеть ошибается на больших гладких поверхностях — на коже ноги, на кожаном
+    пуфе, — и помечает кусок внутри товара как фон. Пайплайн осветляет всё, что
+    считает фоном, поэтому такой кусок выходит светлее и бледнее окружающего.
+    Это и есть «пятна» на готовом кадре.
+
+    Ошибка распознаётся по геометрии: настоящий фон обтекает товар и всегда
+    дотягивается до края кадра. Островок, зажатый товаром со всех сторон, фоном
+    быть не может.
+
+    Одной геометрии мало: просвет между двумя ногами — это тоже островок, не
+    достающий до края, но там действительно фон, и трогать его нельзя. Поэтому
+    решающий голос за моделью фона: если цвет островка совпадает с тем, как фон
+    выглядит в этом месте, это настоящий просвет; если расходится — ошибка маски.
+
+    Симметрично убираются и мелкие ложные пятнышки «товара», рассыпанные по фону:
+    они бы остались неубелёнными точками на белом.
+
+    Возвращает (исправленная маска, что именно было исправлено).
+    """
+    stats = {"filled_px": 0, "removed_px": 0}
+    if model.degenerate:
+        return alpha, stats
+
+    repaired = alpha.copy()
+    solid = repaired >= solid_threshold
+    if not solid.any() or solid.all():
+        return repaired, stats
+
+    # Насколько пиксель расходится с моделью фона. Порог привязан к разбросу
+    # самого фона: на шумном кадре он шире, на чистом — уже.
+    deviation = np.abs(img_lin - model.surface).mean(axis=-1)
+    tolerance = max(tolerance_factor * model.residual_rms, min_tolerance)
+
+    # 1. Островки «фона», не дотягивающиеся до края кадра.
+    labels, count = ndimage.label(~solid)
+    if count:
+        edge = np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+        touches_edge = np.zeros(count + 1, dtype=bool)
+        touches_edge[np.unique(edge)] = True
+
+        means = ndimage.mean(deviation, labels, index=np.arange(1, count + 1))
+        # Ошибка маски = не достаёт до края И не похож на фон.
+        suspect = ~touches_edge[1:] & (np.asarray(means) > tolerance)
+        if suspect.any():
+            fill = np.isin(labels, np.flatnonzero(suspect) + 1)
+            repaired[fill] = 1.0
+            stats["filled_px"] = int(fill.sum())
+
+    # 2. Мелкие ложные островки «товара» посреди фона.
+    slabels, scount = ndimage.label(repaired >= solid_threshold)
+    if scount > 1:
+        sizes = np.bincount(slabels.ravel())[1:]
+        means = np.asarray(ndimage.mean(deviation, slabels, index=np.arange(1, scount + 1)))
+        # Мелкий И неотличимый от фона — значит, это фон, а не деталь товара.
+        tiny = sizes < max(speck_fraction * sizes.max(), 24)
+        specks = tiny & (means <= tolerance)
+        if specks.any():
+            drop = np.isin(slabels, np.flatnonzero(specks) + 1)
+            repaired[drop] = 0.0
+            stats["removed_px"] = int(drop.sum())
+
+    return repaired, stats
