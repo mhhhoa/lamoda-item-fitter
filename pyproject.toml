@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lamoda-item-fitter"
+version = "0.1.0"
+description = "Пакетная замена студийного фона на белый под стандарты Lamoda с сохранением отражений"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "numpy>=1.24",
+    "pillow>=10.0",
+    "scipy>=1.10",
+    "typer>=0.12",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Нейросетевое матирование. Ставится отдельно, т.к. тянет onnxruntime (~200 МБ).
+matting = ["rembg[cpu]>=2.0.57", "onnxruntime>=1.17"]
+gpu = ["rembg[gpu]>=2.0.57", "onnxruntime-gpu>=1.17"]
+ui = ["gradio>=4.44"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+fitter = "item_fitter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

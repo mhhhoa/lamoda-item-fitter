@@ -1,0 +1,31 @@
+# Пресет Wildberries.
+#
+# ВАЖНО: точные числа проверьте в кабинете продавца WB — требования меняются.
+# WB заметно терпимее Lamoda к фону, поэтому отражение оставляем в полную силу,
+# а дотяжку белого делаем мягче, чтобы не терять фактуру светлого товара.
+
+matting: rembg
+refine_alpha: true
+
+background:
+  poly_degree: 2
+  target_bg: "#FFFFFF"
+  knee_low: 0.965
+  knee_high: 0.995
+
+look:
+  wb_strength: 0.2
+  reflection_strength: 1.0
+
+output:
+  jpeg_quality: 95
+  max_bytes: 10485760
+  geometry_mode: keep
+  out_width: 900
+  out_height: 1200
+
+qa:
+  min_white: 245
+  max_product_delta_e: 3.0
+  max_bg_residual: 0.035
+  max_blown_ratio: 0.025
