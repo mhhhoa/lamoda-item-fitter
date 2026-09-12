@@ -142,7 +142,9 @@ def cmd_calibrate(
 @app.command("ui")
 def cmd_ui(
     host: str = typer.Option("127.0.0.1", "--host", help="0.0.0.0 — открыть доступ коллегам по сети."),
-    port: int = typer.Option(7860, "--port"),
+    port: int = typer.Option(
+        None, "--port", help="По умолчанию подбирается свободный, начиная с 7860."
+    ),
     share: bool = typer.Option(False, "--share", help="Временная публичная ссылка."),
 ) -> None:
     """Открыть визуальный интерфейс в браузере."""

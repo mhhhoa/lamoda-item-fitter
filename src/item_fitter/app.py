@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import inspect
+import socket
 import tempfile
 import zipfile
 from pathlib import Path
@@ -332,7 +333,73 @@ def build() -> gr.Blocks:
     return demo
 
 
-def launch(host: str = "127.0.0.1", port: int = 7860, share: bool = False, **extra) -> None:
+DEFAULT_PORT = 7860
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    """Проверяет, свободен ли порт, реальной попыткой занять его.
+
+    Намеренно без SO_REUSEADDR: на Windows этот флаг разрешает биндиться к уже
+    занятому порту, и проверка стала бы врать.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _pick_port(host: str, preferred: int | None, span: int = 60) -> tuple[int | None, bool]:
+    """Выбирает порт. Возвращает (порт или None, был ли занят желаемый).
+
+    Порт подбирается здесь, а не отдаётся на откуп Gradio, по двум причинам.
+    Во-первых, тогда мы знаем номер заранее и можем честно сказать человеку
+    «7860 занят, поднимаю на 7861» вместо молчаливого открытия второго окна.
+    Во-вторых, явно заданный `--port` должен оставаться обещанием: если занят
+    именно он, это ошибка, а не повод тихо уехать на соседний.
+    """
+    first = preferred or DEFAULT_PORT
+    if _port_is_free(host, first):
+        return first, False
+    if preferred is not None:
+        return None, True
+    for candidate in range(first + 1, first + span):
+        if _port_is_free(host, candidate):
+            return candidate, True
+    return None, True
+
+
+def _lan_ip() -> str | None:
+    """Локальный IP машины в сети — чтобы подсказать адрес для коллег.
+
+    UDP-сокет с connect() наружу не отправляет ни одного пакета: вызов лишь
+    заставляет систему выбрать маршрут и, вместе с ним, исходящий адрес.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return None
+
+
+def _announce(host: str, port: int, was_busy: bool) -> None:
+    """Печатает адрес до старта: после blocking-вызова launch() будет поздно."""
+    if was_busy:
+        print(
+            f"\n  Порт {DEFAULT_PORT} занят — похоже, программа уже открыта "
+            f"в другом окне.\n  Запускаю на порту {port}."
+        )
+    if host in ("0.0.0.0", "::"):
+        ip = _lan_ip()
+        where = f"http://{ip}:{port}" if ip else f"http://ВАШ-IP-АДРЕС:{port}"
+        print(f"\n  Адрес для коллег: {where}\n")
+    else:
+        print(f"\n  Адрес: http://{host}:{port}\n")
+
+
+def launch(host: str = "127.0.0.1", port: int | None = None, share: bool = False, **extra) -> None:
     """Поднимает интерфейс на локальной машине.
 
     Набор аргументов launch() у Gradio меняется от версии к версии (в 6.0 уехали
@@ -340,10 +407,15 @@ def launch(host: str = "127.0.0.1", port: int = 7860, share: bool = False, **ext
     Поэтому неподдерживаемые аргументы отбрасываются по сигнатуре, а не подбираются
     по номеру версии: интерфейс поднимется на любой разумной версии.
     """
+    chosen, was_busy = _pick_port(host, port)
+    if chosen is None:
+        _report_no_port(host, port)
+        raise SystemExit(1)
+
     demo = build()
     candidate = {
         "server_name": host,
-        "server_port": port,
+        "server_port": chosen,
         "share": share,
         "inbrowser": host == "127.0.0.1",
         "show_api": False,
@@ -351,4 +423,22 @@ def launch(host: str = "127.0.0.1", port: int = 7860, share: bool = False, **ext
         **extra,
     }
     accepted = set(inspect.signature(demo.launch).parameters)
-    demo.launch(**{k: v for k, v in candidate.items() if k in accepted and v is not None})
+    kwargs = {k: v for k, v in candidate.items() if k in accepted and v is not None}
+
+    _announce(host, chosen, was_busy)
+    try:
+        demo.launch(**kwargs)
+    except OSError:
+        # Между проверкой порта и стартом сервера его мог занять кто-то ещё.
+        # Человеку, который не программист, стек-трейс здесь бесполезен.
+        _report_no_port(host, chosen)
+        raise SystemExit(1) from None
+
+
+def _report_no_port(host: str, port: int | None) -> None:
+    print(
+        f"\n  Не удалось занять порт {port if port else DEFAULT_PORT}.\n"
+        f"\n  Скорее всего программа уже запущена в другом окне — закройте его "
+        f"и попробуйте снова.\n"
+        f"  Либо укажите другой порт вручную:  fitter ui --port 7870\n"
+    )
