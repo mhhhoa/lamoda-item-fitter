@@ -61,7 +61,6 @@ def evaluate(
     alpha: np.ndarray,
     model: BackgroundModel,
     settings: Settings,
-    repair: dict | None = None,
 ) -> QAReport:
     """Считает метрики и выносит вердикт. before/after — sRGB [0,1] одного размера."""
     rep = QAReport()
@@ -78,22 +77,6 @@ def evaluate(
             CHECK,
             f"Фон в углах заметно не белый ({m['bg_corner_min']} из 255).",
         )
-
-    # --- маска была дырявой? ---
-    # Самая коварная поломка: нейросеть помечает кусок внутри товара как фон,
-    # тот осветляется вместе с фоном, и на готовом кадре появляется бледное пятно.
-    # Метрика ниже (сдвиг цвета товара) его не видит — она меряет только там,
-    # где маска говорит «товар», то есть ровно мимо таких дыр.
-    if repair:
-        m["mask_filled_px"] = repair.get("filled_px", 0)
-        m["mask_removed_px"] = repair.get("removed_px", 0)
-        area = max(int((alpha > 0.5).sum()), 1)
-        if m["mask_filled_px"] > 0.02 * area:
-            rep.worsen(
-                CHECK,
-                f"Маска была заметно дырявой: {m['mask_filled_px']} точек внутри товара "
-                f"программа приняла за фон и вернула обратно. Стоит взглянуть на кадр.",
-            )
 
     # --- фон вообще был гладким? ---
     m["bg_residual"] = round(float(model.residual_rms), 5)

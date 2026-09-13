@@ -13,6 +13,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from scipy import ndimage
+
 import gradio as gr
 import numpy as np
 import yaml
@@ -21,6 +23,7 @@ from . import report as repmod
 from .batch import SUPPORTED_SUFFIXES, find_images
 from .config import PRESET_DIR, Settings, list_presets, load_preset
 from .matting import available_backends, get_backend
+from .colorspace import hex_to_rgb, save_jpeg
 from .pipeline import process_array, process_file
 from .qa import CHECK, FAIL, OK
 
@@ -83,7 +86,7 @@ def run_batch_ui(
     matte_fn = get_backend(settings.matting)
     results, failures, rows, gallery = [], [], [], []
 
-    for i, src in enumerate(progress.tqdm(paths, desc="Обработка")):
+    for src in progress.tqdm(paths, desc="Обработка"):
         rel = src.relative_to(root) if root and src.is_relative_to(root) else Path(src.name)
         dst = out_dir / rel.with_suffix(".jpg")
         try:
@@ -105,7 +108,9 @@ def run_batch_ui(
             failures.append((src, exc))
             rows.append([src.name, "ошибка", None, None, None, str(exc)[:200]])
 
-    report_path = out_dir / "_отчёт.html"
+    # Отчёт кладётся РЯДОМ с папкой результатов, а не внутрь неё: в архив для
+    # маркетплейса он попадать не должен, его забирают отдельной кнопкой.
+    report_path = work / "отчёт.html"
     repmod.write_report(report_path, results, failures, preset_name=preset)
 
     archive = work / "результат.zip"
@@ -120,25 +125,57 @@ def run_batch_ui(
         f"- готово без замечаний: **{tally[OK]}**\n"
         f"- проверить глазами: **{tally[CHECK]}**\n"
         f"- ошибки: **{tally[FAIL] + len(failures)}**\n\n"
-        f"Смотреть глазами нужно только помеченные строки. "
-        f"Подробности — в файле `_отчёт.html` внутри архива."
+        f"Смотреть глазами нужно только помеченные строки."
     )
-    # Пустые заглушки таблицы, галереи и двух файловых полей занимают пол-экрана
-    # ещё до того, как что-либо обработано. Показываем блок результатов только
-    # когда результаты действительно есть.
-    return summary, rows, gallery, str(archive), str(report_path), gr.update(visible=True)
+    return (
+        summary,
+        rows,
+        gallery,
+        gr.update(value=str(archive), interactive=True),
+        gr.update(value=str(report_path), interactive=True),
+    )
 
 
-# --- вкладка 2: настройка ---------------------------------------------------
+# --- вкладка 2: один кадр и правка маски ------------------------------------
 
 
-def preview_one(image, preset, matting, wb, reflection, knee_low, degree, target_bg):
-    if image is None:
-        raise gr.Error("Загрузите один кадр для подбора настроек.")
+def _overlay(srgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """Кадр с подсветкой того, что программа сочла товаром.
 
-    srgb = np.asarray(image, dtype=np.float32) / 255.0
-    settings = _settings_from_ui(preset, matting, wb, reflection, knee_low, degree, target_bg)
-    res = process_array(srgb, settings)
+    Без подсветки править маску вслепую: на самом кадре не видно, где именно
+    программа ошиблась.
+    """
+    tint = np.array([0.15, 0.85, 0.45], dtype=np.float32)
+    a = np.clip(alpha, 0.0, 1.0)[..., None] * 0.3
+    mixed = np.clip(srgb, 0, 1) * (1 - a) + tint * a
+    return np.round(np.clip(mixed, 0, 1) * 255).astype(np.uint8)
+
+
+def _editor_value(srgb: np.ndarray, alpha: np.ndarray) -> dict:
+    return {"background": _overlay(srgb, alpha), "layers": [], "composite": None}
+
+
+def _render(
+    srgb: np.ndarray,
+    alpha: np.ndarray,
+    settings: Settings,
+    force_bg: np.ndarray | None = None,
+):
+    """Собирает кадр по готовой маске и готовит всё, что показывает вкладка.
+
+    force_bg — области, которые человек вручную пометил как фон. Их недостаточно
+    просто исключить из маски: пайплайн делит фон на модель освещённости, и кусок
+    товара, помеченный фоном, превратился бы в бледное пятно, а не в белый фон.
+    Раз пометка ручная и однозначная, такие места закрашиваются целевым цветом
+    фона напрямую.
+    """
+    res = process_array(srgb, settings, alpha=alpha)
+
+    if force_bg is not None and force_bg.any():
+        target = np.asarray(hex_to_rgb(settings.target_bg), dtype=np.float32) / 255.0
+        soft = ndimage.gaussian_filter(force_bg.astype(np.float32), 1.0)[..., None]
+        res.image = np.clip(res.image * (1 - soft) + target * soft, 0, 1).astype(np.float32)
+
     m = res.report.metrics
 
     lines = [
@@ -149,9 +186,6 @@ def preview_one(image, preset, matting, wb, reflection, knee_low, degree, target
         f"(меньше 1 — глазом не видно)",
         f"- площадь отражения: `{m.get('reflection_before')}` → `{m.get('reflection_after')}`",
         f"- выбелено товара: `{m.get('blown_ratio')}`",
-        f"- починено точек маски: `{m.get('mask_filled_px', 0)}` "
-        f"(нейросеть приняла их за фон внутри товара)",
-        f"- гладкость фона: `{m.get('bg_residual')}`",
         f"- время: `{res.timing['total']:.1f} с`",
     ]
     if res.report.notes:
@@ -159,8 +193,106 @@ def preview_one(image, preset, matting, wb, reflection, knee_low, degree, target
 
     before8 = np.round(np.clip(srgb, 0, 1) * 255).astype(np.uint8)
     after8 = np.round(np.clip(res.image, 0, 1) * 255).astype(np.uint8)
-    mask8 = np.round(np.clip(res.alpha, 0, 1) * 255).astype(np.uint8)
-    return (before8, after8), mask8, "\n".join(lines), gr.update(visible=True)
+
+    saved = _workdir() / "кадр.jpg"
+    save_jpeg(saved, res.image, quality=settings.jpeg_quality, max_bytes=settings.max_bytes)
+
+    return (before8, after8), _editor_value(srgb, res.alpha), "\n".join(lines), str(saved)
+
+
+def preview_one(image, preset, matting, wb, reflection, knee_low, degree, target_bg):
+    if image is None:
+        raise gr.Error("Загрузите один кадр.")
+
+    srgb = np.asarray(image, dtype=np.float32) / 255.0
+    settings = _settings_from_ui(preset, matting, wb, reflection, knee_low, degree, target_bg)
+    res = process_array(srgb, settings)
+
+    empty = np.zeros(res.alpha.shape, dtype=bool)
+    pair, editor, md, saved = _render(srgb, res.alpha, settings)
+    state = {
+        "src": srgb,
+        "auto": res.alpha,
+        "alpha": res.alpha,
+        "force_bg": empty,
+        "settings": settings,
+    }
+    return pair, editor, md, gr.update(value=saved, interactive=True), state
+
+
+def _strokes_to_masks(layers, shape) -> tuple[np.ndarray, np.ndarray]:
+    """Разбирает мазки на «вернуть товару» (зелёное) и «отправить в фон» (красное)."""
+    add = np.zeros(shape, dtype=bool)
+    remove = np.zeros(shape, dtype=bool)
+
+    for layer in layers or []:
+        arr = np.asarray(layer)
+        if arr.ndim != 3 or arr.shape[-1] < 4:
+            continue
+        if arr.shape[:2] != shape:
+            # Редактор может отдать слой в размере отображения, а не оригинала.
+            from PIL import Image
+
+            arr = np.asarray(
+                Image.fromarray(arr.astype(np.uint8), "RGBA").resize(
+                    (shape[1], shape[0]), Image.NEAREST
+                )
+            )
+        painted = arr[..., 3] > 8
+        rgb = arr[..., :3].astype(np.int16)
+        add |= painted & (rgb[..., 1] > rgb[..., 0] + 40) & (rgb[..., 1] > rgb[..., 2] + 40)
+        remove |= painted & (rgb[..., 0] > rgb[..., 1] + 40) & (rgb[..., 0] > rgb[..., 2] + 40)
+
+    return add, remove
+
+
+def apply_mask_edit(editor_value, state):
+    if not state:
+        raise gr.Error("Сначала нажмите «Показать результат».")
+    if not isinstance(editor_value, dict):
+        raise gr.Error("Нечего применять — сначала закрасьте нужные места.")
+
+    alpha = state["alpha"].copy()
+    add, remove = _strokes_to_masks(editor_value.get("layers"), alpha.shape)
+    if not add.any() and not remove.any():
+        raise gr.Error("Мазков не найдено. Закрасьте зелёным товар или красным фон.")
+
+    alpha[add] = 1.0
+    alpha[remove] = 0.0
+
+    force_bg = state.get("force_bg")
+    if force_bg is None:
+        force_bg = np.zeros(alpha.shape, dtype=bool)
+    force_bg = (force_bg | remove) & ~add
+
+    # Граница мазка иначе получается ступенькой там, где закрашенный товар
+    # соприкасается с фоном. Смягчается только полоса СНАРУЖИ мазка: внутри
+    # должно остаться ровно то, что человек закрасил, иначе тонкий мазок
+    # размывается наполовину и правка не срабатывает.
+    painted = add | remove
+    outside = ndimage.binary_dilation(painted, iterations=2) & ~painted
+    if outside.any():
+        alpha = np.where(outside, ndimage.gaussian_filter(alpha, 1.0), alpha)
+
+    pair, editor, md, saved = _render(state["src"], alpha, state["settings"], force_bg)
+    md = (
+        f"Правка применена: {int(add.sum())} точек вернули товару, "
+        f"{int(remove.sum())} отправили в фон.\n\n" + md
+    )
+    state = {**state, "alpha": alpha, "force_bg": force_bg}
+    return pair, editor, md, gr.update(value=saved, interactive=True), state
+
+
+def reset_mask_edit(state):
+    if not state:
+        raise gr.Error("Сначала нажмите «Показать результат».")
+    pair, editor, md, saved = _render(state["src"], state["auto"], state["settings"])
+    state = {
+        **state,
+        "alpha": state["auto"],
+        "force_bg": np.zeros(state["auto"].shape, dtype=bool),
+    }
+    return pair, editor, "Правка сброшена.\n\n" + md, gr.update(value=saved), state
 
 
 def save_preset_ui(name, preset, matting, wb, reflection, knee_low, degree, target_bg):
@@ -181,27 +313,6 @@ def save_preset_ui(name, preset, matting, wb, reflection, knee_low, degree, targ
 
 # --- сборка интерфейса ------------------------------------------------------
 
-# Ширину Gradio по умолчанию тянет на весь экран, отчего поля и кнопки
-# расползаются на пол-монитора. Зажимаем колонку и даём кнопкам размер по тексту.
-_CSS = """
-.gradio-container { max-width: 940px !important; margin: 0 auto !important; }
-footer { display: none !important; }
-.fitter-hint { font-size: 13px; opacity: 0.72; margin: -6px 0 2px; }
-"""
-
-# В интерфейсе термин «матирование» не показываем: он ничего не говорит тому,
-# кто просто обрабатывает съёмку. Название описывает результат, а не метод.
-_MATTING_CHOICES = [
-    ("Точно — нейросеть (по умолчанию)", "rembg"),
-    ("Максимально точно — медленнее", "rembg-birefnet"),
-    ("Быстро — без нейросети", "simple"),
-]
-
-_PRESET_HINT = (
-    "Пресет — сохранённый набор всех настроек сразу: под какой маркетплейс, "
-    "какого цвета фон, какой размер на выходе. Как пресет в лайтруме."
-)
-
 
 def build() -> gr.Blocks:
     presets = list_presets() or ["lamoda"]
@@ -210,36 +321,29 @@ def build() -> gr.Blocks:
 
     blocks_kwargs = {"title": "Замена фона на белый"}
     if _GRADIO_MAJOR < 6:
-        # В 6.0 и theme, и css переехали в launch(); там они и передаются.
         blocks_kwargs["theme"] = gr.themes.Soft()
-        blocks_kwargs["css"] = _CSS
 
     with gr.Blocks(**blocks_kwargs) as demo:
         gr.Markdown(_INTRO)
 
         with gr.Row():
-            preset = gr.Dropdown(presets, value=default, label="Пресет", scale=1)
-        gr.Markdown(_PRESET_HINT, elem_classes="fitter-hint")
+            preset = gr.Dropdown(presets, value=default, label="Пресет", scale=2)
+            matting = gr.Dropdown(
+                available_backends(), value=base.matting, label="Матирование", scale=2
+            )
+            target_bg = gr.Textbox(base.target_bg, label="Цвет фона", scale=1)
 
-        with gr.Accordion("Ещё настройки", open=False):
-            with gr.Row():
-                matting = gr.Dropdown(
-                    _MATTING_CHOICES,
-                    value=base.matting,
-                    label="Как находить товар в кадре",
-                    info="Быстрый режим не найдёт белый товар на светлом фоне.",
-                )
-                target_bg = gr.Textbox(base.target_bg, label="Цвет фона")
+        with gr.Accordion("Тонкая настройка", open=False):
             with gr.Row():
                 wb = gr.Slider(
                     0, 1, base.wb_strength, step=0.05,
                     label="Снятие цветного рефлекса с товара",
-                    info="Убирает подкраску фоном с кожи и ткани. Перекрутить хуже, чем недокрутить.",
+                    info="Насколько убирать подкраску фоном с кожи и ткани.",
                 )
                 reflection = gr.Slider(
                     0, 1, base.reflection_strength, step=0.05,
-                    label="Сила тени под товаром",
-                    info="1 — как в оригинале. 0 — убрать совсем.",
+                    label="Сила отражения",
+                    info="1 — как в оригинале. 0 — убрать тень совсем.",
                 )
             with gr.Row():
                 knee_low = gr.Slider(
@@ -249,68 +353,91 @@ def build() -> gr.Blocks:
                 )
                 degree = gr.Slider(
                     1, 3, base.poly_degree, step=1,
-                    label="Сложность фона",
-                    info="2 — обычная циклорама. 3 — сложный градиент.",
+                    label="Степень модели фона",
+                    info="2 — обычная циклорама. 3 — сложный градиент или виньетка.",
                 )
 
         controls = [preset, matting, wb, reflection, knee_low, degree, target_bg]
 
         with gr.Tab("Пакет"):
+            gr.Markdown("Перетащите кадры **или** впишите путь к папке на этом компьютере.")
             files = gr.File(
-                file_count="multiple", label="Кадры", file_types=["image"], height=130
+                file_count="multiple", label="Кадры", file_types=["image"], height=160
             )
             folder = gr.Textbox(
-                label="…либо путь к папке на этом компьютере",
-                placeholder=r"C:\Съёмки\неделя_42",
-                info="Если заполнено, файлы выше игнорируются.",
+                label="…либо путь к папке",
+                placeholder=r"C:\Съёмки\неделя_42  (если заполнено — файлы выше игнорируются)",
             )
+            run_btn = gr.Button("Обработать всё", variant="primary", size="lg")
+            summary = gr.Markdown()
+            table = gr.Dataframe(
+                headers=["файл", "статус", "углы", "ΔE товара", "КБ", "замечания"],
+                label="Результаты",
+                wrap=True,
+            )
+            gallery = gr.Gallery(label="Результат", columns=4, height=340)
             with gr.Row():
-                run_btn = gr.Button("Обработать всё", variant="primary", scale=0, min_width=170)
-            with gr.Group(visible=False) as results_box:
-                summary = gr.Markdown()
-                table = gr.Dataframe(
-                    headers=["файл", "статус", "фон", "сдвиг цвета", "КБ", "замечания"],
-                    label="Результаты",
-                    wrap=True,
+                zip_btn = gr.DownloadButton(
+                    "Скачать архив с готовыми кадрами", variant="primary", interactive=False
                 )
-                gallery = gr.Gallery(label="Результат", columns=4, height=260)
-                with gr.Row():
-                    zip_out = gr.File(label="Архив с готовыми кадрами", height=110)
-                    report_out = gr.File(label="Отчёт", height=110)
+                report_btn = gr.DownloadButton("Скачать HTML-отчёт", interactive=False)
+            gr.Markdown(
+                "Отчёт скачивается отдельно и в архив не кладётся — архив уходит "
+                "на маркетплейс как есть.",
+                elem_classes="fitter-hint",
+            )
 
             run_btn.click(
                 run_batch_ui,
                 [files, folder, *controls],
-                [summary, table, gallery, zip_out, report_out, results_box],
+                [summary, table, gallery, zip_btn, report_btn],
             )
 
-        with gr.Tab("Один кадр"):
+        with gr.Tab("Один кадр и правка маски"):
             gr.Markdown(
-                "Подберите вид на одном кадре, сохраните как пресет — "
-                "и используйте его на вкладке «Пакет».",
-                elem_classes="fitter-hint",
+                "Обработайте кадр, а затем поправьте маску руками, если программа "
+                "где-то ошиблась. **Зелёная кисть** — вернуть товару, **красная** — "
+                "отправить в фон. Размер кисти и ластика меняется в самом редакторе."
             )
+            state = gr.State()
             with gr.Row():
-                with gr.Column(scale=1, min_width=240):
-                    single = gr.Image(label="Кадр", type="numpy", height=300)
-                    with gr.Row():
-                        prev_btn = gr.Button("Показать результат", variant="primary",
-                                             scale=0, min_width=170)
+                with gr.Column(scale=1):
+                    single = gr.Image(label="Кадр", type="numpy", height=320)
+                    prev_btn = gr.Button("Показать результат", variant="primary")
                     metrics_md = gr.Markdown()
-                with gr.Column(scale=2, min_width=300):
-                    with gr.Group(visible=False) as preview_box:
-                        slider = gr.ImageSlider(label="До / после", height=400)
-                        mask_view = gr.Image(
-                            label="Что программа сочла товаром (белое)", height=170
-                        )
+                with gr.Column(scale=2):
+                    slider = gr.ImageSlider(label="До / после", height=440)
+                    editor = gr.ImageEditor(
+                        label="Правка маски: зелёным — товар, красным — фон",
+                        type="numpy",
+                        brush=gr.Brush(
+                            colors=["#16D95A", "#FF3B30"],
+                            color_mode="fixed",
+                            default_size=28,
+                        ),
+                        eraser=gr.Eraser(default_size=28),
+                        layers=False,
+                        transforms=[],
+                        height=440,
+                    )
+                    with gr.Row():
+                        apply_btn = gr.Button("Применить правку", variant="primary")
+                        reset_btn = gr.Button("Сбросить правку")
+                    frame_btn = gr.DownloadButton("Скачать этот кадр", interactive=False)
+
             with gr.Row():
-                preset_name = gr.Textbox(label="Имя нового пресета", placeholder="мой_вариант",
-                                         scale=2)
-                save_btn = gr.Button("Сохранить пресет", scale=0, min_width=170)
+                preset_name = gr.Textbox(label="Имя нового пресета", placeholder="мой_вариант")
+                save_btn = gr.Button("Сохранить пресет")
             save_msg = gr.Markdown()
 
             prev_btn.click(
-                preview_one, [single, *controls], [slider, mask_view, metrics_md, preview_box]
+                preview_one, [single, *controls], [slider, editor, metrics_md, frame_btn, state]
+            )
+            apply_btn.click(
+                apply_mask_edit, [editor, state], [slider, editor, metrics_md, frame_btn, state]
+            )
+            reset_btn.click(
+                reset_mask_edit, [state], [slider, editor, metrics_md, frame_btn, state]
             )
             save_btn.click(save_preset_ui, [preset_name, *controls], [save_msg])
 
@@ -404,7 +531,6 @@ def launch(host: str = "127.0.0.1", port: int | None = None, share: bool = False
         "inbrowser": host == "127.0.0.1",
         "show_api": False,
         "theme": gr.themes.Soft() if _GRADIO_MAJOR >= 6 else None,
-        "css": _CSS if _GRADIO_MAJOR >= 6 else None,
         **extra,
     }
     accepted = set(inspect.signature(demo.launch).parameters)
