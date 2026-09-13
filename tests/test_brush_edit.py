@@ -157,8 +157,8 @@ def test_report_is_not_inside_the_archive(scene, tmp_path):
         img, _ = scene()
         save_jpeg(src / f"art{i}.jpg", img, quality=96)
 
-    summary, rows, gallery, zip_upd, report_upd = app.run_batch_ui(
-        None, str(src), "lamoda", "simple", 0.25, 1.0, 0.955, 2, "#FFFFFF"
+    summary, rows, gallery, zip_upd, report_upd, batch = app.run_batch_ui(
+        None, str(src), "lamoda", "simple", 0.25, 1.0, 0.985, 2, "#FFFFFF"
     )
 
     archive = zip_upd["value"]
@@ -172,3 +172,98 @@ def test_report_is_not_inside_the_archive(scene, tmp_path):
     assert Path(report_upd["value"]).exists()
     assert report_upd["interactive"] is True
     assert zip_upd["interactive"] is True
+
+
+
+class _Select:
+    """Заглушка события выбора в галерее."""
+
+    def __init__(self, index: int):
+        self.index = index
+
+
+def _run_batch(scene, tmp_path, count: int = 2):
+    from item_fitter.colorspace import save_jpeg
+
+    src = tmp_path / "in"
+    src.mkdir()
+    for i in range(count):
+        img, _ = scene()
+        save_jpeg(src / f"art{i}.jpg", img, quality=96)
+    return src, app.run_batch_ui(
+        None, str(src), "lamoda", "simple", 0.25, 1.0, 0.985, 2, "#FFFFFF"
+    )
+
+
+def test_batch_frame_opens_for_editing(scene, tmp_path):
+    """Кадр из результатов пакета должен открываться в редакторе по клику."""
+    _, (_, _, _, _, _, batch) = _run_batch(scene, tmp_path)
+    assert len(batch["items"]) == 2
+
+    group, label, pair, editor, md, state = app.pick_from_batch(batch, _Select(0))
+    assert group["visible"] is True
+    assert batch["items"][0]["name"] in label
+    assert state["alpha"].shape == state["src"].shape[:2]
+    assert "background" in editor
+
+
+def test_batch_edit_rewrites_file_and_archive(scene, tmp_path):
+    """Правка из пакета обязана обновить и готовый файл, и архив."""
+    import zipfile
+    from pathlib import Path
+
+    import numpy as np
+
+    _, (_, _, _, _, _, batch) = _run_batch(scene, tmp_path)
+    _, _, _, _, _, state = app.pick_from_batch(batch, _Select(0))
+
+    dst = Path(state["item"]["dst"])
+    before_bytes = dst.read_bytes()
+    before_zip = Path(batch["archive"]).stat().st_mtime_ns
+
+    h, w = state["alpha"].shape
+    box = (h // 2, h // 2 + 30, 10, 40)
+    pair, editor, md, zip_upd, new_state = app.apply_batch_edit(
+        {"layers": [_stroke((h, w), box, GREEN)]}, state
+    )
+
+    assert dst.read_bytes() != before_bytes, "файл в папке результата не обновился"
+    assert Path(batch["archive"]).stat().st_mtime_ns != before_zip, "архив не пересобран"
+    assert "обновлены" in md
+
+    # И в архиве по-прежнему только кадры, без отчёта.
+    names = zipfile.ZipFile(batch["archive"]).namelist()
+    assert not any(n.lower().endswith(".html") for n in names)
+    assert new_state["alpha"][box[0] : box[1], box[2] : box[3]].min() == 1.0
+
+
+def test_batch_reset_restores_automatic_result(scene, tmp_path):
+    """Сброс возвращает файл к тому, что посчитала программа."""
+    from pathlib import Path
+
+    import numpy as np
+
+    _, (_, _, _, _, _, batch) = _run_batch(scene, tmp_path)
+    _, _, _, _, _, state = app.pick_from_batch(batch, _Select(0))
+    dst = Path(state["item"]["dst"])
+    original = dst.read_bytes()
+
+    h, w = state["alpha"].shape
+    _, _, _, _, edited = app.apply_batch_edit(
+        {"layers": [_stroke((h, w), (h // 2, h // 2 + 30, 10, 40), GREEN)]}, state
+    )
+    assert dst.read_bytes() != original
+
+    _, _, md, _, restored = app.reset_batch_edit(edited)
+    assert np.array_equal(restored["alpha"], restored["auto"])
+    assert "сброшена" in md.lower()
+    assert dst.read_bytes() == original, "после сброса файл не совпал с автоматическим"
+
+
+def test_editor_canvas_is_downscaled(scene):
+    """Холст редактора не должен быть полноразмерным — иначе браузер тормозит."""
+    import numpy as np
+
+    srgb, alpha = scene(h=2000, w=1500)
+    value = app._editor_value(srgb, alpha)
+    assert max(value["background"].shape[:2]) <= app._EDITOR_MAX_SIDE

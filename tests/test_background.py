@@ -133,24 +133,49 @@ def test_fit_ignores_reflection_darkening():
 
 
 def test_white_roll_off_protects_masked_area():
-    """Белый товар под защитной маской не должен схлопнуться в фон.
-
-    0.995 — реалистичное значение чистого фона после деления: в теории ровно 1.0,
-    на практике чуть ниже из-за шума JPEG.
-    """
-    img = np.full((20, 20, 3), 0.995, dtype=np.float32)
+    """Белый товар под защитной маской не должен схлопнуться в фон."""
+    img = np.full((20, 20, 3), 0.999, dtype=np.float32)
     protect = np.zeros((20, 20), dtype=np.float32)
     protect[5:15, 5:15] = 1.0
 
     out = bgmod.white_roll_off(img, protect=protect)
-    assert out[0, 0, 0] == pytest.approx(1.0, abs=1e-5), "фон не дотянуло до белого"
-    assert out[10, 10, 0] == pytest.approx(0.995, abs=1e-5), "защищённый товар выбелило"
+    assert round(float(out[0, 0, 0]) * 255) == 255, "фон не дотянуло до белого"
+    assert out[10, 10, 0] == pytest.approx(0.999, abs=1e-5), "защищённый товар выбелило"
 
 
 def test_white_roll_off_leaves_reflection_alone():
     """Дотяжка белого не должна съедать полутона отражения."""
     img = np.full((8, 8, 3), 0.90, dtype=np.float32)
     assert bgmod.white_roll_off(img)[0, 0, 0] == pytest.approx(0.90, abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    "value, what",
+    [(0.990, "белый реквизит в кадре"), (0.965, "белая кожа товара"), (0.930, "светлая кожа")],
+)
+def test_white_roll_off_spares_light_content(value, what):
+    """Светлое, но не белое, дотяжка трогать почти не должна.
+
+    Из-за низкого порога и размытия решения она раньше выбеливала кожу модели
+    и плющила белый реквизит — тот терял форму и выглядел размытым.
+    """
+    img = np.full((12, 12, 3), value, dtype=np.float32)
+    out = float(bgmod.white_roll_off(img)[6, 6, 0])
+    assert out - value < 0.012, f"{what} выбелило: {value*255:.0f} -> {out*255:.0f}"
+
+
+def test_white_roll_off_does_not_bleed_onto_neighbours():
+    """Побеление не должно расползаться на соседние пиксели.
+
+    Размытие решения о дотяжке давало вокруг светлых мест мягкий белый ореол,
+    который читался как блюр.
+    """
+    img = np.full((20, 20, 3), 0.93, dtype=np.float32)
+    img[:, 10:] = 1.0  # справа чистый белый фон
+
+    out = bgmod.white_roll_off(img)
+    assert out[10, 9, 0] == pytest.approx(0.93, abs=1e-4), "побеление залезло на соседа"
+    assert round(float(out[10, 11, 0]) * 255) == 255
 
 
 def test_edge_decontamination_removes_colour_fringe():

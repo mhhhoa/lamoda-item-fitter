@@ -23,7 +23,7 @@ from . import report as repmod
 from .batch import SUPPORTED_SUFFIXES, find_images
 from .config import PRESET_DIR, Settings, list_presets, load_preset
 from .matting import available_backends, get_backend
-from .colorspace import hex_to_rgb, save_jpeg
+from .colorspace import hex_to_rgb, load_srgb, save_jpeg
 from .pipeline import process_array, process_file
 from .qa import CHECK, FAIL, OK
 
@@ -43,6 +43,15 @@ _INTRO = """
 
 def _workdir() -> Path:
     return Path(tempfile.mkdtemp(prefix="fitter_"))
+
+
+def _build_archive(out_dir: Path, archive: Path) -> Path:
+    """Пересобирает архив из готовых кадров. Отчёт внутрь не попадает."""
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(out_dir.rglob("*")):
+            if f.is_file():
+                zf.write(f, f.relative_to(out_dir))
+    return archive
 
 
 def _collect_inputs(files, folder: str) -> tuple[list[Path], Path | None]:
@@ -83,8 +92,11 @@ def run_batch_ui(
     out_dir = work / "готово"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    masks_dir = work / "маски"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+
     matte_fn = get_backend(settings.matting)
-    results, failures, rows, gallery = [], [], [], []
+    results, failures, rows, gallery, items = [], [], [], [], []
 
     for src in progress.tqdm(paths, desc="Обработка"):
         rel = src.relative_to(root) if root and src.is_relative_to(root) else Path(src.name)
@@ -104,6 +116,17 @@ def run_batch_ui(
                 ]
             )
             gallery.append((res.image, f"{src.name} · {_BADGE[res.verdict]}"))
+
+            # Маска кладётся на диск, чтобы её можно было поправить кистью сразу
+            # после прогона, не пересчитывая нейросеть.
+            from PIL import Image as _Image
+
+            mask_path = masks_dir / f"{len(items):04d}.png"
+            _Image.fromarray(
+                np.round(np.clip(res.alpha, 0, 1) * 255).astype(np.uint8), "L"
+            ).save(mask_path)
+            items.append({"name": src.name, "src": str(src), "dst": str(dst),
+                          "mask": str(mask_path)})
         except Exception as exc:  # noqa: BLE001
             failures.append((src, exc))
             rows.append([src.name, "ошибка", None, None, None, str(exc)[:200]])
@@ -113,11 +136,7 @@ def run_batch_ui(
     report_path = work / "отчёт.html"
     repmod.write_report(report_path, results, failures, preset_name=preset)
 
-    archive = work / "результат.zip"
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in sorted(out_dir.rglob("*")):
-            if f.is_file():
-                zf.write(f, f.relative_to(out_dir))
+    archive = _build_archive(out_dir, work / "результат.zip")
 
     tally = {v: sum(1 for r in results if r.verdict == v) for v in (OK, CHECK, FAIL)}
     summary = (
@@ -127,12 +146,19 @@ def run_batch_ui(
         f"- ошибки: **{tally[FAIL] + len(failures)}**\n\n"
         f"Смотреть глазами нужно только помеченные строки."
     )
+    batch = {
+        "items": items,
+        "out_dir": str(out_dir),
+        "archive": str(archive),
+        "settings": settings,
+    }
     return (
         summary,
         rows,
         gallery,
         gr.update(value=str(archive), interactive=True),
         gr.update(value=str(report_path), interactive=True),
+        batch,
     )
 
 
@@ -151,8 +177,25 @@ def _overlay(srgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     return np.round(np.clip(mixed, 0, 1) * 255).astype(np.uint8)
 
 
+# Холст редактора в полном разрешении тормозит браузер на каждом штрихе.
+# Мазки всё равно приводятся к размеру кадра при применении, поэтому показывать
+# уменьшенную копию безопасно.
+_EDITOR_MAX_SIDE = 1100
+
+
 def _editor_value(srgb: np.ndarray, alpha: np.ndarray) -> dict:
-    return {"background": _overlay(srgb, alpha), "layers": [], "composite": None}
+    overlay = _overlay(srgb, alpha)
+    h, w = overlay.shape[:2]
+    scale = _EDITOR_MAX_SIDE / max(h, w)
+    if scale < 1.0:
+        from PIL import Image
+
+        overlay = np.asarray(
+            Image.fromarray(overlay).resize(
+                (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS
+            )
+        )
+    return {"background": overlay, "layers": [], "composite": None}
 
 
 def _render(
@@ -169,8 +212,15 @@ def _render(
     Раз пометка ручная и однозначная, такие места закрашиваются целевым цветом
     фона напрямую.
     """
-    res = process_array(srgb, settings, alpha=alpha)
+    return _present(srgb, process_array(srgb, settings, alpha=alpha), settings, force_bg)
 
+
+def _present(srgb, res, settings: Settings, force_bg: np.ndarray | None = None):
+    """Готовит всё, что показывает вкладка, по уже посчитанному результату.
+
+    Отделено от _render, потому что предпросмотр уже имеет результат на руках:
+    раньше он считал кадр второй раз только чтобы его показать.
+    """
     if force_bg is not None and force_bg.any():
         target = np.asarray(hex_to_rgb(settings.target_bg), dtype=np.float32) / 255.0
         soft = ndimage.gaussian_filter(force_bg.astype(np.float32), 1.0)[..., None]
@@ -209,7 +259,7 @@ def preview_one(image, preset, matting, wb, reflection, knee_low, degree, target
     res = process_array(srgb, settings)
 
     empty = np.zeros(res.alpha.shape, dtype=bool)
-    pair, editor, md, saved = _render(srgb, res.alpha, settings)
+    pair, editor, md, saved = _present(srgb, res, settings)
     state = {
         "src": srgb,
         "auto": res.alpha,
@@ -246,9 +296,10 @@ def _strokes_to_masks(layers, shape) -> tuple[np.ndarray, np.ndarray]:
     return add, remove
 
 
-def apply_mask_edit(editor_value, state):
+def _apply_strokes(editor_value, state):
+    """Переносит мазки на маску. Возвращает (маска, ручной фон, сколько добавили, сколько убрали)."""
     if not state:
-        raise gr.Error("Сначала нажмите «Показать результат».")
+        raise gr.Error("Сначала выберите кадр.")
     if not isinstance(editor_value, dict):
         raise gr.Error("Нечего применять — сначала закрасьте нужные места.")
 
@@ -274,13 +325,90 @@ def apply_mask_edit(editor_value, state):
     if outside.any():
         alpha = np.where(outside, ndimage.gaussian_filter(alpha, 1.0), alpha)
 
+    return alpha, force_bg, int(add.sum()), int(remove.sum())
+
+
+def _edit_note(added: int, removed: int) -> str:
+    return f"Правка применена: {added} точек вернули товару, {removed} отправили в фон.\n\n"
+
+
+def apply_mask_edit(editor_value, state):
+    alpha, force_bg, added, removed = _apply_strokes(editor_value, state)
     pair, editor, md, saved = _render(state["src"], alpha, state["settings"], force_bg)
-    md = (
-        f"Правка применена: {int(add.sum())} точек вернули товару, "
-        f"{int(remove.sum())} отправили в фон.\n\n" + md
-    )
     state = {**state, "alpha": alpha, "force_bg": force_bg}
-    return pair, editor, md, gr.update(value=saved, interactive=True), state
+    return pair, editor, _edit_note(added, removed) + md, gr.update(value=saved, interactive=True), state
+
+
+# --- правка кадра прямо из результатов пакета --------------------------------
+
+
+def pick_from_batch(batch, evt: gr.SelectData):
+    """Открывает выбранный в галерее кадр в редакторе маски."""
+    if not batch or not batch.get("items"):
+        raise gr.Error("Сначала обработайте пакет.")
+    if evt.index is None or evt.index >= len(batch["items"]):
+        raise gr.Error("Этот кадр обработать не удалось — править нечего.")
+
+    from PIL import Image
+
+    item = batch["items"][evt.index]
+    srgb, _ = load_srgb(item["src"])
+    alpha = np.asarray(Image.open(item["mask"]).convert("L"), dtype=np.float32) / 255.0
+    settings = batch["settings"]
+
+    pair, editor, md, _ = _render(srgb, alpha, settings)
+    state = {
+        "src": srgb,
+        "auto": alpha,
+        "alpha": alpha,
+        "force_bg": np.zeros(alpha.shape, dtype=bool),
+        "settings": settings,
+        "item": item,
+        "batch": batch,
+    }
+    return (
+        gr.update(visible=True),
+        f"### Правим: {item['name']}",
+        pair,
+        editor,
+        md,
+        state,
+    )
+
+
+def _save_batch_frame(state, alpha, force_bg):
+    """Пересобирает кадр, перезаписывает файл в папке результата и архив."""
+    item, batch = state["item"], state["batch"]
+    settings = state["settings"]
+
+    pair, editor, md, _ = _render(state["src"], alpha, settings, force_bg)
+    res = process_array(state["src"], settings, alpha=alpha)
+    image = res.image
+    if force_bg is not None and force_bg.any():
+        target = np.asarray(hex_to_rgb(settings.target_bg), dtype=np.float32) / 255.0
+        soft = ndimage.gaussian_filter(force_bg.astype(np.float32), 1.0)[..., None]
+        image = np.clip(image * (1 - soft) + target * soft, 0, 1).astype(np.float32)
+
+    save_jpeg(item["dst"], image, quality=settings.jpeg_quality, max_bytes=settings.max_bytes)
+    _build_archive(Path(batch["out_dir"]), Path(batch["archive"]))
+    return pair, editor, md
+
+
+def apply_batch_edit(editor_value, state):
+    alpha, force_bg, added, removed = _apply_strokes(editor_value, state)
+    pair, editor, md = _save_batch_frame(state, alpha, force_bg)
+    state = {**state, "alpha": alpha, "force_bg": force_bg}
+    note = _edit_note(added, removed) + "Файл в папке результата и архив обновлены.\n\n"
+    return pair, editor, note + md, gr.update(value=state["batch"]["archive"]), state
+
+
+def reset_batch_edit(state):
+    if not state or "item" not in state:
+        raise gr.Error("Сначала выберите кадр в галерее.")
+    empty = np.zeros(state["auto"].shape, dtype=bool)
+    pair, editor, md = _save_batch_frame(state, state["auto"], empty)
+    state = {**state, "alpha": state["auto"], "force_bg": empty}
+    return pair, editor, "Правка сброшена.\n\n" + md, gr.update(value=state["batch"]["archive"]), state
 
 
 def reset_mask_edit(state):
@@ -347,9 +475,9 @@ def build() -> gr.Blocks:
                 )
             with gr.Row():
                 knee_low = gr.Slider(
-                    0.90, 0.99, base.knee_low, step=0.005,
+                    0.95, 0.999, base.knee_low, step=0.001,
                     label="Порог дотяжки белого",
-                    info="Ниже — фон белее, но светлый товар рискует слиться.",
+                    info="Ниже — фон белее, но светлая кожа и белый реквизит начинают выбеливаться.",
                 )
                 degree = gr.Slider(
                     1, 3, base.poly_degree, step=1,
@@ -375,7 +503,8 @@ def build() -> gr.Blocks:
                 label="Результаты",
                 wrap=True,
             )
-            gallery = gr.Gallery(label="Результат", columns=4, height=340)
+            gallery = gr.Gallery(label="Результат — нажмите на кадр, чтобы поправить маску",
+                                 columns=4, height=340)
             with gr.Row():
                 zip_btn = gr.DownloadButton(
                     "Скачать архив с готовыми кадрами", variant="primary", interactive=False
@@ -387,10 +516,54 @@ def build() -> gr.Blocks:
                 elem_classes="fitter-hint",
             )
 
+            batch_state = gr.State()
+            edit_state = gr.State()
+
+            with gr.Group(visible=False) as edit_group:
+                edit_label = gr.Markdown()
+                gr.Markdown(
+                    "**Зелёная кисть** — вернуть товару, **красная** — отправить в фон, "
+                    "**ластик** — стереть свой мазок. Размер меняется в редакторе. "
+                    "После «Применить» файл в папке результата и архив обновляются сами.",
+                    elem_classes="fitter-hint",
+                )
+                with gr.Row():
+                    batch_slider = gr.ImageSlider(label="До / после", height=420)
+                    batch_editor = gr.ImageEditor(
+                        label="Правка маски: зелёным — товар, красным — фон",
+                        type="numpy",
+                        brush=gr.Brush(
+                            colors=["#16D95A", "#FF3B30"], color_mode="fixed", default_size=28
+                        ),
+                        eraser=gr.Eraser(default_size=28),
+                        layers=False,
+                        transforms=[],
+                        height=420,
+                    )
+                with gr.Row():
+                    batch_apply = gr.Button("Применить правку", variant="primary")
+                    batch_reset = gr.Button("Сбросить правку")
+                batch_md = gr.Markdown()
+
             run_btn.click(
                 run_batch_ui,
                 [files, folder, *controls],
-                [summary, table, gallery, zip_btn, report_btn],
+                [summary, table, gallery, zip_btn, report_btn, batch_state],
+            )
+            gallery.select(
+                pick_from_batch,
+                [batch_state],
+                [edit_group, edit_label, batch_slider, batch_editor, batch_md, edit_state],
+            )
+            batch_apply.click(
+                apply_batch_edit,
+                [batch_editor, edit_state],
+                [batch_slider, batch_editor, batch_md, zip_btn, edit_state],
+            )
+            batch_reset.click(
+                reset_batch_edit,
+                [edit_state],
+                [batch_slider, batch_editor, batch_md, zip_btn, edit_state],
             )
 
         with gr.Tab("Один кадр и правка маски"):

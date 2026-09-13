@@ -10,8 +10,8 @@ refine_alpha: true
 background:
   poly_degree: 2
   target_bg: "#FFFFFF"
-  knee_low: 0.965
-  knee_high: 0.995
+  knee_low: 0.985
+  knee_high: 0.998
 
 look:
   wb_strength: 0.2

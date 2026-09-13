@@ -11,8 +11,8 @@ refine_alpha: true
 background:
   poly_degree: 2        # 2 — обычная циклорама, 3 — сложный градиент/виньетка
   target_bg: "#FFFFFF"  # если категория требует светло-серый, ставьте, например, "#EFEFEF"
-  knee_low: 0.955
-  knee_high: 0.992
+  knee_low: 0.985         # держится выше светлой кожи и белого реквизита
+  knee_high: 0.998
 
 look:
   wb_strength: 0.25         # доля отражённого от циклорамы света; подбирается `fitter calibrate`
