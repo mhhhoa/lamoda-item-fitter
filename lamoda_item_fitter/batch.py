@@ -137,6 +137,9 @@ def process_one(job: Job, preset: Preset) -> Outcome:
     отмены пользователем: сбой одного файла превращается в статус его строки,
     а остальные продолжают обрабатываться.
     """
+    # отметка до чтения файла: если процесс убьёт система, именно эта строка
+    # останется в логе последней и назовёт виновника
+    errors.trace(f"начат {job.source.name}")
     try:
         image = load_image(job.source)
     except (KeyboardInterrupt, SystemExit):
@@ -178,6 +181,7 @@ def process_one(job: Job, preset: Preset) -> Outcome:
     elif quality and quality < preset.output.jpeg_quality:
         warnings.append(f"качество снижено до {quality}, чтобы уложиться в лимит веса")
 
+    errors.trace(f"готов {job.source.name} — {result.status}, {size / 1048576:.2f} МБ")
     return Outcome(job, result.status, reason=result.reason, warnings=warnings,
                    metrics=result.metrics, size_bytes=size, quality=quality)
 

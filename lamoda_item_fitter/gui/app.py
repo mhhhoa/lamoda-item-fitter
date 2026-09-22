@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .. import errors
+from .. import __version__, errors
 from ..batch import COPY, FAILED, Job, Outcome, apply_policy, conflicts, plan
 from ..config import Preset, resource_dir
 from ..downloads import downloads_dir, open_folder
@@ -175,7 +175,9 @@ class MainWindow(QWidget):
         self._thread: QThread | None = None
         self._worker: BatchWorker | None = None
         self._pool = QThreadPool()
-        self._pool.setMaxThreadCount(2)
+        # миниатюры готовятся по одной: это фоновая мелочь, ради которой не
+        # стоит держать в памяти два полноразмерных кадра одновременно
+        self._pool.setMaxThreadCount(1)
         #: один отправитель на всё окно — см. _ThumbTask
         self._thumbs = _ThumbSignals()
         self._thumbs.ready.connect(self._set_thumbnail)
@@ -348,6 +350,7 @@ class MainWindow(QWidget):
         self.tree.clear()
         self._rows.clear()
         self._jobs = plan(self._sources, self._preset, output_root=self._output_root)
+        errors.trace(f"в очереди {len(self._jobs)} файлов")
         for job in self._jobs:
             item = QTreeWidgetItem([_display_name(job), "", "в очереди", ""])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -487,6 +490,7 @@ class MainWindow(QWidget):
         self.progress.setValue(0)
         self.progress.show()
         self.status.setText("Анализирую…" if analyze_only else "Обрабатываю…")
+        errors.trace(f"{'анализ' if analyze_only else 'обработка'}: {len(jobs)} файлов")
 
         self._counts = {}
         self._cancelled = False
@@ -640,16 +644,6 @@ class MainWindow(QWidget):
         event.accept()
 
 
-def _close_splash() -> None:
-    """Гасит заставку собранного exe — окно уже на экране."""
-    try:
-        import pyi_splash  # доступен только внутри сборки PyInstaller
-
-        pyi_splash.close()
-    except Exception:
-        pass
-
-
 def _force_foreground_on_windows(window: QWidget) -> None:
     """Запасной путь: Windows отдаёт передний план не по всякой просьбе.
 
@@ -695,18 +689,12 @@ def _bring_to_front(window: QWidget) -> None:
 def show_in_front(window: QWidget) -> None:
     """Показывает окно так, чтобы оно оказалось перед человеком, а не за папкой.
 
-    Порядок здесь важен. У собранной программы своя заставка, и это отдельное
-    окно: пока она на экране, передний план принадлежит ей. Если гасить её
-    после показа главного окна, Windows отдаёт освободившийся передний план
-    тому, что лежало под заставкой, — обычно проводнику, из которого
-    запускали exe. Программа при этом открыта, но спрятана за папкой, и
-    выглядит это как «не запустилась».
-
-    Поэтому сначала гасим заставку, потом показываем окно и просим передний
-    план — и повторяем просьбу, когда цикл событий уже крутится: к этому
-    моменту порядок окон успевает перестроиться.
+    Windows отдаёт передний план новому окну не всегда, и тогда программа
+    оказывается позади папки, из которой её запустили: открыта, но не видна,
+    и выглядит это как «не запустилась». Поэтому передний план запрашивается
+    явно — и ещё раз, когда цикл событий уже крутится: к этому моменту
+    порядок окон успевает перестроиться.
     """
-    _close_splash()
     window.show()
     _bring_to_front(window)
     QTimer.singleShot(0, lambda: _bring_to_front(window))
@@ -716,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
     import sys
 
     errors.install()
+    errors.start_log(f"{APP_NAME} {__version__}")
     application = QApplication(argv if argv is not None else sys.argv)
     application.setApplicationName(APP_NAME)
     application.setOrganizationName(APP_NAME)

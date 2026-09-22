@@ -9,6 +9,14 @@
 предупреждения Windows о неудалённой временной папке. В onedir файлы уже
 лежат распакованными рядом с exe, и рабочий процесс стартует напрямую.
 
+Заставки у сборки нет намеренно. Она была нужна режиму onefile, где старт
+занимал секунды на распаковку. В onedir программа стартует сразу, а вот
+вреда от заставки много: это отдельное окно, которое поднимает сам
+загрузчик PyInstaller — а значит, и каждый рабочий процесс обработки, ведь
+он запускается тем же exe. Погасить её в рабочем процессе некому: он
+завершается раньше, чем доходит до нашего кода. Отсюда и чужие окна поверх
+программы, и лишний поток Tk в каждом рабочем процессе.
+
 Из scipy нужен только ndimage — он тянет за собой лишь `_lib` и `special`,
 поэтому крупные подпакеты исключены. Из Qt нужны Core, Gui и Widgets.
 Если исключение окажется лишним, это поймает `--selftest` в CI.
@@ -66,18 +74,9 @@ analysis = Analysis(
 
 pyz = PYZ(analysis.pure)
 
-splash = Splash(
-    str(ROOT / "assets" / "splash.png"),
-    binaries=analysis.binaries,
-    datas=analysis.datas,
-    text_pos=None,
-    always_on_top=True,
-)
-
 exe = EXE(
     pyz,
     analysis.scripts,
-    splash,
     [],
     exclude_binaries=True,  # бинарники едут рядом папкой, а не внутрь exe
     name=EXE_NAME,
@@ -99,7 +98,6 @@ collection = COLLECT(
     exe,
     analysis.binaries,
     analysis.datas,
-    splash.binaries,
     strip=False,
     upx=False,
     name="LamodaItemFitter",

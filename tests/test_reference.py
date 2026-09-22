@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from lamoda_item_fitter.analyze import analyze_paths, collect
+from tests.conftest import expected_bottom
 
 REFERENCE = Path(__file__).resolve().parent.parent / "reference"
 pytestmark = pytest.mark.skipif(not list(REFERENCE.glob("*")), reason="эталоны не приложены")
@@ -95,7 +96,7 @@ def test_refitting_a_published_photo_reproduces_the_rules(preset):
         result = fit_image(load_image(path), preset)
         assert result.status == FITTED, f"{path.name}: {result.reason}"
         margins = result.metrics.margins
-        assert margins["bottom"] == preset.margins.bottom, path.name
+        assert margins["bottom"] == expected_bottom(preset), path.name
         assert margins["left"] >= preset.margins.left, path.name
         assert margins["right"] >= preset.margins.right, path.name
         assert margins["top"] >= preset.margins.top, path.name
@@ -103,3 +104,52 @@ def test_refitting_a_published_photo_reproduces_the_rules(preset):
         assert 0.85 <= result.metrics.scale <= 1.15, path.name
         checked += 1
     assert checked == 10
+
+
+def _independent_edges(image, threshold: int = 6) -> dict[str, int]:
+    """Меряет поля готового кадра, не пользуясь нашей же маской.
+
+    Модерация Ламоды смотрит на результат своими глазами и своим порогом.
+    Проверять себя тем же кодом, который и расставлял товар, бессмысленно:
+    ошибка размещения так и останется незамеченной — ровно это и случилось
+    с версиями до 1.5, где товар вставал ровно на линию и модерация
+    браковала кадр за то, что он её «не касается».
+    """
+    import numpy as np
+
+    array = np.asarray(image.convert("RGB")).astype(np.int16)
+    border = np.concatenate([array[:40].reshape(-1, 3), array[-40:].reshape(-1, 3),
+                             array[:, :40].reshape(-1, 3), array[:, -40:].reshape(-1, 3)])
+    difference = np.abs(array - np.median(border, axis=0)).max(axis=2)
+    rows = np.where((difference > threshold).any(axis=1))[0]
+    cols = np.where((difference > threshold).any(axis=0))[0]
+    height, width = array.shape[:2]
+    return {"top": int(rows.min()), "bottom": int(height - 1 - rows.max()),
+            "left": int(cols.min()), "right": int(width - 1 - cols.max())}
+
+
+def test_result_touches_the_bottom_margin_like_moderated_photos():
+    """Товар обязан заходить в нижний отступ, как у прошедших модерацию фото.
+
+    Замер самих эталонов: нижнее поле 312…361 при медиане 347. Ровно 360 —
+    единственный край этого распределения, и на практике проверка Ламоды
+    читает такое размещение как зазор.
+    """
+    from lamoda_item_fitter.config import Preset
+    from lamoda_item_fitter.fitter import FITTED as FITTED_STATUS
+    from lamoda_item_fitter.fitter import fit_image
+    from lamoda_item_fitter.imageio import load_image
+
+    preset = Preset.load(Path(__file__).resolve().parent.parent / "presets" / "lamoda.json")
+    checked = 0
+    for path in sorted(REFERENCE.glob("*")):
+        result = fit_image(load_image(path), preset)
+        if result.status != FITTED_STATUS:
+            continue
+        checked += 1
+        edges = _independent_edges(result.image)
+        assert edges["bottom"] < preset.margins.bottom, f"{path.name}: не касается отступа"
+        assert edges["bottom"] >= 300, f"{path.name}: зашёл в отступ слишком глубоко"
+        for side in ("top", "left", "right"):
+            assert edges[side] >= 200 - 1, f"{path.name}: поле {side} = {edges[side]}"
+    assert checked >= 10

@@ -10,6 +10,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lamoda_item_fitter.config import Preset  # noqa: E402
 
 
+def expected_bottom(preset: Preset) -> int:
+    """Нижнее поле готового кадра.
+
+    Не ровно margins.bottom: товар обязан заходить в отступ, иначе модерация
+    Ламоды считает, что он его не касается — см. Preset.bottom_overshoot.
+    """
+    return preset.margins.bottom - preset.bottom_overshoot
+
+
 @pytest.fixture
 def preset() -> Preset:
     return Preset.load(Path(__file__).resolve().parent.parent / "presets" / "lamoda.json")

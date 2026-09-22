@@ -44,6 +44,42 @@ def describe(error: BaseException) -> str:
     return f"{type(error).__name__}: {text}" if text else type(error).__name__
 
 
+#: больше этого лог не растёт: при перезапуске старый отодвигается в .1
+MAX_LOG_BYTES = 2 * 1024 * 1024
+
+
+def _write(text: str) -> None:
+    try:
+        with _lock:
+            with log_path().open("a", encoding="utf-8") as handle:
+                handle.write(text)
+    except Exception:
+        pass  # лог — не повод падать
+
+
+def trace(message: str) -> None:
+    """Короткая строка о том, что программа делает прямо сейчас.
+
+    Нужна ровно для одного случая: когда процесс убивает система — из-за
+    нехватки памяти или падения внутри системной библиотеки. Исключения при
+    этом не возникает, перехватывать нечего, и единственный след — последняя
+    строка в логе. По ней видно, на каком файле всё оборвалось; без неё о
+    причине можно только гадать.
+    """
+    _write(f"{datetime.now().strftime('%H:%M:%S')}  {message}\n")
+
+
+def start_log(header: str) -> None:
+    """Открывает лог нового запуска, отодвинув разросшийся старый."""
+    try:
+        path = log_path()
+        if path.is_file() and path.stat().st_size > MAX_LOG_BYTES:
+            path.replace(path.with_suffix(path.suffix + ".1"))
+    except Exception:
+        pass
+    _write(f"\n===== {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — {header} =====\n")
+
+
 def log_only(where: str, error: BaseException) -> str:
     """Пишет сбой в лог, но не тревожит интерфейс.
 
@@ -53,12 +89,7 @@ def log_only(where: str, error: BaseException) -> str:
     summary = describe(error)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     body = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-    try:
-        with _lock:
-            with log_path().open("a", encoding="utf-8") as handle:
-                handle.write(f"\n===== {stamp} — {where} =====\n{body}")
-    except Exception:
-        pass  # лог — не повод падать
+    _write(f"\n===== {stamp} — {where} =====\n{body}")
     return summary
 
 

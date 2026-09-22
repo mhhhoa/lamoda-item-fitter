@@ -3,7 +3,7 @@
 import pytest
 
 from lamoda_item_fitter.fitter import FITTED, fit_image
-from tests.conftest import as_image, canvas
+from tests.conftest import as_image, canvas, expected_bottom
 
 CASES = [
     # описание, кадр, товар (высота, ширина, отступ сверху, отступ слева)
@@ -30,7 +30,7 @@ def test_item_stands_on_baseline(preset, name, frame, item):
     assert result.image.size == (preset.canvas.width, preset.canvas.height)
 
     margins = result.metrics.margins
-    assert margins["bottom"] == preset.margins.bottom, "низ товара обязан лежать на линии"
+    assert margins["bottom"] == expected_bottom(preset), "низ товара обязан лежать на линии"
     assert margins["top"] >= preset.margins.top
     assert margins["left"] >= preset.margins.left
     assert margins["right"] >= preset.margins.right
@@ -87,4 +87,4 @@ def test_noisy_background_still_lands_on_baseline(preset):
     result = fit_image(as_image(array), preset)
 
     assert result.status == FITTED
-    assert result.metrics.margins["bottom"] == preset.margins.bottom
+    assert result.metrics.margins["bottom"] == expected_bottom(preset)

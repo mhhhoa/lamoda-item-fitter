@@ -8,7 +8,7 @@ from PIL import Image
 
 from lamoda_item_fitter.fitter import FITTED, fit_image
 from lamoda_item_fitter.imageio import load_image, save_image
-from tests.conftest import canvas
+from tests.conftest import canvas, expected_bottom
 
 
 def shoe(height=900, width=1400, level=246):
@@ -33,7 +33,7 @@ def test_unusual_modes_are_readable(tmp_path, preset, name, save):
     result = fit_image(load_image(path), preset)
 
     assert result.status == FITTED, f"{name}: {result.reason}"
-    assert result.metrics.margins["bottom"] == preset.margins.bottom
+    assert result.metrics.margins["bottom"] == expected_bottom(preset)
 
 
 def test_exif_rotation_is_applied(tmp_path, preset):

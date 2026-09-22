@@ -121,9 +121,10 @@ def _scaled_piece(
     """
     box_w = box[2] - box[0] + 1
     box_h = box[3] - box[1] + 1
+    baseline = preset.baseline_y + preset.bottom_overshoot
     side = (preset.canvas.width / scale - box_w) / 2.0
-    above = (preset.baseline_y - box_h * scale) / scale
-    below = (preset.canvas.height - preset.baseline_y) / scale
+    above = (baseline - box_h * scale) / scale
+    below = (preset.canvas.height - baseline) / scale
     pad = max(1, math.ceil(CROP_PAD / scale))
 
     x0 = max(0, math.floor(box[0] - side) - pad)
@@ -142,7 +143,9 @@ def _place(
     item_w = item[2] - item[0] + 1
     item_h = item[3] - item[1] + 1
     target_x0 = int(round(preset.center_x - item_w / 2.0))
-    target_y1 = preset.baseline_y - 1
+    # товар опускаем чуть ниже линии отступа: см. Preset.bottom_overshoot —
+    # размещение ровно на линии модерация Ламоды бракует
+    target_y1 = preset.baseline_y - 1 + preset.bottom_overshoot
     offset = (target_x0 - item[0], target_y1 - item[3])
 
     canvas = new_canvas(preset.canvas.width, preset.canvas.height, background)
