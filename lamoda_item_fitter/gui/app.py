@@ -11,7 +11,8 @@ from pathlib import Path
 from PySide6.QtCore import (
     QObject, QRunnable, QSize, Qt, QThread, QThreadPool, QTimer, Signal,
 )
-from PySide6.QtGui import QBrush, QColor, QIcon, QImage, QImageReader, QPixmap
+from PIL import Image, ImageOps
+from PySide6.QtGui import QBrush, QColor, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QMessageBox, QProgressBar, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
@@ -47,14 +48,38 @@ STATUS_TEXT = {
 
 
 def _load_scaled(path: Path, box: QSize) -> QImage:
-    """Читает изображение сразу уменьшенным — полноразмерные кадры тяжёлые."""
-    reader = QImageReader(str(path))
-    reader.setAutoTransform(True)
-    size = reader.size()
-    if size.isValid() and (size.width() > box.width() or size.height() > box.height()):
-        scaled = size.scaled(box, Qt.AspectRatioMode.KeepAspectRatio)
-        reader.setScaledSize(scaled)
-    return reader.read()
+    """Читает изображение уменьшенным — средствами Pillow, а не Qt.
+
+    Файлы пользователя декодирует только Pillow. На нём же построена вся
+    обработка, он видел за это время всё: шестнадцатибитные сканы, CMYK,
+    битые заголовки, — и на любом отказе поднимает обычное исключение
+    Python, которое ловится и попадает в лог.
+
+    Плагины изображений Qt ведут себя иначе: наткнувшись на нестандартный
+    файл, они снимают процесс целиком — без исключения, без сообщения и без
+    единой строки в логе. Именно так и выглядели падения, после которых у
+    коллеги в папке не оставалось никакого следа. А декодировал Qt тем
+    чаще, чем больше файлов положили в очередь: миниатюра готовится для
+    каждого.
+    """
+    try:
+        with Image.open(path) as source:
+            # для JPEG это просит декодер сразу отдать уменьшенный кадр:
+            # полноразмерный тут не нужен ни миниатюре, ни превью
+            source.draft("RGB", (box.width(), box.height()))
+            image = ImageOps.exif_transpose(source) or source
+            image = image.convert("RGB")
+            image.thumbnail((box.width(), box.height()), Image.LANCZOS)
+            data = image.tobytes("raw", "RGB")
+        # copy() обязателен: QImage не владеет переданным буфером, а тот
+        # живёт только до выхода из функции
+        return QImage(data, image.width, image.height, image.width * 3,
+                      QImage.Format.Format_RGB888).copy()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as error:  # noqa: BLE001
+        errors.log_only(f"показ {path.name}", error)
+        return QImage()
 
 
 def _display_name(job: Job) -> str:

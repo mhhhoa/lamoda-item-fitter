@@ -335,3 +335,35 @@ def test_window_is_shown_and_pulled_forward(qt_app, preset):
     assert shown == ["окно"]
     assert window.windowState() & Qt.WindowState.WindowActive
     window.close()
+
+
+def test_broken_files_never_reach_a_native_decoder(qt_app, tmp_path):
+    """Показ любого файла обязан пережить его содержимое.
+
+    Миниатюра готовится для каждого добавленного файла, поэтому именно здесь
+    программа чаще всего встречает то, чего не ждала. Сбой декодера Qt снимал
+    бы процесс без исключения и без строки в логе — ровно то, на что
+    жаловались коллеги. Поэтому декодирует Pillow, а отказ обязан быть
+    пустой картинкой, а не падением.
+    """
+    from PySide6.QtCore import QSize
+
+    from lamoda_item_fitter.gui.app import _load_scaled
+
+    hostile = {
+        "обрезанный.jpg": (tmp_path / "обрезанный.jpg"),
+        "не_картинка.jpg": (tmp_path / "не_картинка.jpg"),
+        "пустой.png": (tmp_path / "пустой.png"),
+        "нет_такого.jpg": (tmp_path / "нет_такого.jpg"),
+    }
+    whole = tmp_path / "целый.jpg"
+    Image.fromarray(canvas(600, 800)).save(whole)
+    hostile["обрезанный.jpg"].write_bytes(whole.read_bytes()[:400])
+    hostile["не_картинка.jpg"].write_text("вовсе не изображение", encoding="utf-8")
+    hostile["пустой.png"].write_bytes(b"")
+
+    for name, path in hostile.items():
+        image = _load_scaled(path, QSize(96, 96))
+        assert image.isNull(), f"{name}: ожидалась пустая картинка"
+
+    assert not _load_scaled(whole, QSize(96, 96)).isNull()
