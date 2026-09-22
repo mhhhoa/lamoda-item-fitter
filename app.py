@@ -56,8 +56,11 @@ def selftest(report_path: str | None) -> int:
         check("подгонка выполняется", result.status == FITTED, result.reason)
         check("размер результата",
               result.image is not None and result.image.size == (1524, 2200))
-        check("низ на линии отступа",
-              result.metrics.margins.get("bottom") == preset.margins.bottom,
+        # низ не ровно на линии, а чуть ниже: товар обязан заходить в отступ,
+        # иначе модерация Ламоды считает, что он его не касается
+        expected_bottom = preset.margins.bottom - preset.bottom_overshoot
+        check("низ заходит в отступ",
+              result.metrics.margins.get("bottom") == expected_bottom,
               str(result.metrics.margins))
 
         from lamoda_item_fitter.imageio import save_image
