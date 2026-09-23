@@ -10,4 +10,5 @@ out/
 готово/
 *.html
 !docs/*.html
+!ИНСТРУКЦИЯ.html
 .DS_Store
